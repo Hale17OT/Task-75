@@ -42,9 +42,8 @@ The implementation benchmark used for this repository is [temp/final_plan_of_act
 
 ## Configuration
 
-1. Optional: copy `.env.example` to `.env` if you want to override defaults.
-2. Run with defaults directly via `docker compose up --build` for local/offline bootstrap on a fresh machine.
-3. Adjust values if your environment needs different ports, credentials, shared-folder paths, or data directories.
+1. Run with defaults directly via `docker compose up --build` for local/offline bootstrap on a fresh machine.
+2. Optionally provide a `.env` file to override defaults for ports, credentials, shared-folder paths, or data directories.
 
 Important environment variables:
 
@@ -95,6 +94,54 @@ Shared report delivery:
 - Host path: `${REPORTS_SHARED_HOST_PATH}` (default `./shared-reports`)
 - Container path: `${BACKEND_REPORTS_SHARED_PATH}` (default `/shared/reports`)
 - For Windows UNC/SMB shares, set `REPORTS_SHARED_HOST_PATH` to an absolute host-mounted path available to Docker Desktop.
+
+## Quick start (new machine)
+
+1. Install Docker Desktop (or Docker Engine + Compose plugin) and start Docker.
+2. Open this repository directory.
+3. Run:
+
+```bash
+docker compose up --build
+```
+
+4. Wait until services are healthy, then open [http://localhost:5173](http://localhost:5173).
+5. If `BACKEND_DEMO_SEED_USERS=false` (default), complete the one-time “First administrator setup”.
+6. To stop:
+
+```bash
+docker compose down
+```
+
+Notes:
+- No `.env` file is required for local startup; Compose defaults are provided.
+- Ensure ports `5173`, `3000`, `3306`, and `3307` are free on the host.
+
+## Troubleshooting
+
+- Docker daemon not running:
+  Start Docker Desktop and retry `docker compose up --build`.
+
+- Port already in use:
+  Find and stop conflicting processes, or override bind ports in `.env` (for example `FRONTEND_PORT`, `BACKEND_PORT`, `MYSQL_PORT_BIND`, `MYSQL_STANDBY_PORT_BIND`).
+
+- Backend cannot connect to MySQL after config changes:
+  Recreate clean volumes:
+  ```bash
+  docker compose down --volumes --remove-orphans
+  docker compose up --build
+  ```
+
+- Health endpoint not ready:
+  Check logs:
+  ```bash
+  docker compose logs backend
+  docker compose logs mysql
+  ```
+  Backend readiness endpoint: [http://localhost:3000/health/ready](http://localhost:3000/health/ready)
+
+- UI loads but login/bootstrap fails:
+  Confirm backend is reachable at [http://localhost:3000/health/live](http://localhost:3000/health/live) and that station token input is set in the UI.
 
 ## Demo seed accounts
 
