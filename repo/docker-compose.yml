@@ -1,0 +1,85 @@
+services:
+  mysql:
+    image: mysql:8.4
+    command: --log-bin-trust-function-creators=1
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-sentinelfit}
+      MYSQL_USER: ${MYSQL_USER:-sentinelfit_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-SentinelFitLocal_DB_9f3c1a2b}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-SentinelFitLocal_Root_6a8d2c4e}
+    ports:
+      - "${MYSQL_PORT_BIND:-127.0.0.1:3306}:3306"
+    volumes:
+      - mysql-data-v2:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mysql-standby:
+    image: mysql:8.4
+    command: --log-bin-trust-function-creators=1
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-sentinelfit}
+      MYSQL_USER: ${MYSQL_USER:-sentinelfit_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-SentinelFitLocal_DB_9f3c1a2b}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-SentinelFitLocal_Root_6a8d2c4e}
+    ports:
+      - "${MYSQL_STANDBY_PORT_BIND:-127.0.0.1:3307}:3306"
+    volumes:
+      - mysql-standby-data-v2:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      NODE_ENV: ${BACKEND_NODE_ENV:-development}
+      PORT: ${BACKEND_PORT:-3000}
+      ALLOWED_ORIGINS: ${BACKEND_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://frontend:5173}
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-sentinelfit}
+      MYSQL_USER: ${MYSQL_USER:-sentinelfit_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-SentinelFitLocal_DB_9f3c1a2b}
+      MYSQL_STANDBY_HOST: ${MYSQL_STANDBY_HOST:-mysql-standby}
+      MYSQL_STANDBY_PORT: ${MYSQL_STANDBY_PORT:-3306}
+      DATA_DIR: ${BACKEND_DATA_DIR:-/app/backend/data}
+      REPORTS_SHARED_PATH: ${BACKEND_REPORTS_SHARED_PATH:-/shared/reports}
+      IP_ALLOWLIST: ${BACKEND_IP_ALLOWLIST:-127.0.0.1,::1,::ffff:127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      DEMO_SEED_USERS: ${BACKEND_DEMO_SEED_USERS:-false}
+      KEY_VAULT_MASTER_KEY: ${BACKEND_KEY_VAULT_MASTER_KEY:-088D0xu5V7IBcVSnpQ+oYF7mqiKvLCinWpumJTrdfDY=}
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    volumes:
+      - backend-data-v2:/app/backend/data
+      - ${REPORTS_SHARED_HOST_PATH:-./shared-reports}:/shared/reports
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql-standby:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+      PORT: ${FRONTEND_PORT:-5173}
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      backend:
+        condition: service_started
+
+volumes:
+  mysql-data-v2:
+  mysql-standby-data-v2:
+  backend-data-v2:

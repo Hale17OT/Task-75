@@ -1,0 +1,12 @@
+{
+  "name": "sentinelfit-root",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.1"
+  }
+}
+
