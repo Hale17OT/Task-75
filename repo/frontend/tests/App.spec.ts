@@ -1,12 +1,17 @@
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { webcrypto } from "node:crypto";
 import App from "../src/App.vue";
 import { useAuthStore } from "../src/stores/auth";
 
 describe("App", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    vi.stubGlobal("crypto", webcrypto as unknown as Crypto);
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "123e4567-e89b-12d3-a456-426614174001"
+    );
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -77,24 +82,6 @@ describe("App", () => {
       const url = String(input);
       const method = init?.method ?? "GET";
       const body = init?.body ? JSON.parse(String(init.body)) : null;
-
-      if (url.includes("/api/auth/restore")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            ok: true,
-            data: {
-              session: null,
-              warmLocked: false,
-              currentUser: null,
-              hasPin: false,
-              warmLockMinutes: 5,
-              sessionTimeoutMinutes: 30,
-              lastActivityAt: null
-            }
-          })
-        });
-      }
 
       if (url.includes("/api/auth/bootstrap/status")) {
         return Promise.resolve({
@@ -239,5 +226,76 @@ describe("App", () => {
       .findAll("button")
       .some((buttonWrapper) => buttonWrapper.text().trim() === "Reports");
     expect(hasReportsButton).toBe(false);
+  });
+
+  it("falls back to overview when a coach forces an unauthorized admin view", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+
+      if (url.includes("/api/auth/bootstrap/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              requiresBootstrap: false
+            }
+          })
+        });
+      }
+
+      if (url.includes("/api/auth/login") && method === "POST") {
+        if (body?.username === "coach") {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ok: true,
+              data: {
+                currentUser: {
+                  id: 2,
+                  username: "coach",
+                  fullName: "Default Coach",
+                  roles: ["Coach"]
+                },
+                sessionSecret: btoa("coach-secret-coach-secret-coach-secret!!"),
+                hasPin: false,
+                warmLockMinutes: 5,
+                sessionTimeoutMinutes: 30
+              }
+            })
+          });
+        }
+      }
+
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          data: {}
+        })
+      });
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(App, {
+      global: {
+        plugins: [createPinia()]
+      }
+    });
+    await flushPromises();
+
+    const store = useAuthStore();
+    await store.login("coach", "Coach12345!X");
+    await flushPromises();
+
+    store.activeView = "admin";
+    await flushPromises();
+
+    expect(store.activeView).toBe("overview");
+    expect(wrapper.text()).not.toContain("Admin console");
+    expect(wrapper.text()).toContain("Operational snapshot");
   });
 });

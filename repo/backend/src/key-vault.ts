@@ -35,9 +35,10 @@ export interface KeyVault {
   syncMetadata(): Promise<void>;
 }
 
-const DEFAULT_MASTER_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const AUTO_GENERATE_MASTER_KEY = "AUTO_GENERATE";
 
 const vaultPathFor = (config: AppConfig) => `${config.DATA_DIR}/key-vault.json`;
+const generatedMasterKeyPathFor = (config: AppConfig) => `${config.DATA_DIR}/key-vault.master.key`;
 
 const hardenVaultFile = async (filePath: string) => {
   try {
@@ -48,9 +49,32 @@ const hardenVaultFile = async (filePath: string) => {
   }
 };
 
-const decodeMasterKey = (config: AppConfig) => {
+const loadOrCreateGeneratedMasterKey = async (config: AppConfig) => {
+  const filePath = generatedMasterKeyPathFor(config);
+  await mkdir(config.DATA_DIR, { recursive: true });
+  try {
+    const existing = (await readFile(filePath, "utf8")).trim();
+    const decoded = Buffer.from(existing, "base64");
+    if (decoded.length !== 32 || decoded.toString("base64") !== existing) {
+      throw new Error("Generated key is invalid");
+    }
+    await hardenVaultFile(filePath);
+    return decoded;
+  } catch {
+    const generated = randomBytes(32).toString("base64");
+    await writeFile(filePath, generated, "utf8");
+    await hardenVaultFile(filePath);
+    return Buffer.from(generated, "base64");
+  }
+};
+
+const decodeMasterKey = async (config: AppConfig) => {
+  if (config.KEY_VAULT_MASTER_KEY === AUTO_GENERATE_MASTER_KEY) {
+    return loadOrCreateGeneratedMasterKey(config);
+  }
+
   const decoded = Buffer.from(config.KEY_VAULT_MASTER_KEY, "base64");
-  if (decoded.length !== 32) {
+  if (decoded.length !== 32 || decoded.toString("base64") !== config.KEY_VAULT_MASTER_KEY) {
     throw new Error("KEY_VAULT_MASTER_KEY must decode to exactly 32 bytes");
   }
 
@@ -129,7 +153,7 @@ const loadState = async (config: AppConfig): Promise<VaultState> => {
 };
 
 const persistState = async (config: AppConfig, state: VaultState) => {
-  const masterKey = decodeMasterKey(config);
+  const masterKey = await decodeMasterKey(config);
   const filePath = vaultPathFor(config);
   const persisted: VaultState = {
     keys: state.keys.map((key) => ({
@@ -178,6 +202,7 @@ const hasLegacyPlaintext = (state: VaultState) => state.keys.some((key) => key.v
 
 export const createKeyVault = (config: AppConfig, upsertMetadata: (key: VaultKey) => Promise<void>): KeyVault => ({
   async getActiveKey() {
+    const masterKey = await decodeMasterKey(config);
     const state = await loadState(config);
     if (hasLegacyPlaintext(state)) {
       await persistState(config, state);
@@ -200,9 +225,10 @@ export const createKeyVault = (config: AppConfig, upsertMetadata: (key: VaultKey
       await persistState(config, state);
     }
 
-    return toRuntimeVaultKey(activeKey, decodeMasterKey(config));
+    return toRuntimeVaultKey(activeKey, masterKey);
   },
   async getKey(keyId: string) {
+    const masterKey = await decodeMasterKey(config);
     const state = await loadState(config);
     if (hasLegacyPlaintext(state)) {
       await persistState(config, state);
@@ -213,9 +239,10 @@ export const createKeyVault = (config: AppConfig, upsertMetadata: (key: VaultKey
       throw new Error(`Unknown key ${keyId}`);
     }
 
-    return toRuntimeVaultKey(key, decodeMasterKey(config));
+    return toRuntimeVaultKey(key, masterKey);
   },
   async syncMetadata() {
+    const masterKey = await decodeMasterKey(config);
     const state = await loadState(config);
     if (hasLegacyPlaintext(state)) {
       await persistState(config, state);
@@ -223,10 +250,10 @@ export const createKeyVault = (config: AppConfig, upsertMetadata: (key: VaultKey
     await rotateIfNeeded(config, state);
 
     for (const key of state.keys) {
-      await upsertMetadata(toRuntimeVaultKey(key, decodeMasterKey(config)));
+      await upsertMetadata(toRuntimeVaultKey(key, masterKey));
     }
   }
 });
 
 export const getNodeSecret = (value: string) => createSecretKey(Buffer.from(value, "base64"));
-export const defaultVaultMasterKey = DEFAULT_MASTER_KEY;
+export const defaultVaultMasterKey = AUTO_GENERATE_MASTER_KEY;

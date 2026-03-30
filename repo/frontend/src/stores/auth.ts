@@ -28,6 +28,14 @@ interface AuthState {
 }
 
 const initialStationToken = window.localStorage.getItem("sentinelfit.stationToken") ?? "";
+const warmLockContextStorageKey = "sentinelfit.warmLockContext";
+
+interface WarmLockContext {
+  currentUser: SessionUser;
+  hasPin: boolean;
+  warmLockMinutes: number;
+  sessionTimeoutMinutes: number;
+}
 
 const canAccessView = (user: SessionUser | null, view: ActiveView) => {
   if (!user) {
@@ -70,6 +78,39 @@ export const useAuthStore = defineStore("auth", {
     warmLocked: false
   }),
   actions: {
+    persistWarmLockContext(value: WarmLockContext | null) {
+      if (!value) {
+        window.localStorage.removeItem(warmLockContextStorageKey);
+        return;
+      }
+      window.localStorage.setItem(warmLockContextStorageKey, JSON.stringify(value));
+    },
+
+    loadWarmLockContext(): WarmLockContext | null {
+      const raw = window.localStorage.getItem(warmLockContextStorageKey);
+      if (!raw) {
+        return null;
+      }
+      try {
+        const parsed = JSON.parse(raw) as WarmLockContext;
+        if (!parsed.currentUser || !parsed.hasPin) {
+          return null;
+        }
+        return parsed;
+      } catch {
+        return null;
+      }
+    },
+
+    clearSessionState() {
+      this.currentUser = null;
+      this.sessionSecret = null;
+      this.hasPin = false;
+      this.warmLocked = false;
+      this.activeView = "overview";
+      this.persistWarmLockContext(null);
+    },
+
     api() {
       return createApiClient(() => this.sessionSecret, () => this.stationToken);
     },
@@ -88,22 +129,37 @@ export const useAuthStore = defineStore("auth", {
       this.loading = true;
       this.error = null;
       try {
-        const restored = await this.api().restoreSession();
-        const { session } = restored;
-        if (session) {
-          this.currentUser = null;
-          this.sessionSecret = null;
-          this.hasPin = false;
+        const sessionResponse = await this.api().getSession();
+        if (sessionResponse.session) {
+          const session = sessionResponse.session;
+          this.currentUser = session.currentUser;
+          this.hasPin = session.hasPin;
           this.warmLockMinutes = session.warmLockMinutes;
           this.sessionTimeoutMinutes = session.sessionTimeoutMinutes;
+          this.bootstrapRequired = false;
+          this.warmLocked = Boolean(session.warmLocked);
+          this.sessionSecret = session.sessionSecret ?? null;
+          if (this.warmLocked) {
+            this.persistWarmLockContext({
+              currentUser: session.currentUser,
+              hasPin: session.hasPin,
+              warmLockMinutes: session.warmLockMinutes,
+              sessionTimeoutMinutes: session.sessionTimeoutMinutes
+            });
+          } else {
+            this.persistWarmLockContext(null);
+          }
+          this.ensureAuthorizedActiveView();
+          return;
         }
 
-        if (restored.warmLocked && restored.currentUser && restored.hasPin) {
-          this.currentUser = restored.currentUser;
+        const warmLockContext = this.loadWarmLockContext();
+        if (warmLockContext) {
+          this.currentUser = warmLockContext.currentUser;
           this.sessionSecret = null;
-          this.hasPin = restored.hasPin;
-          this.warmLockMinutes = restored.warmLockMinutes;
-          this.sessionTimeoutMinutes = restored.sessionTimeoutMinutes;
+          this.hasPin = warmLockContext.hasPin;
+          this.warmLockMinutes = warmLockContext.warmLockMinutes;
+          this.sessionTimeoutMinutes = warmLockContext.sessionTimeoutMinutes;
           this.bootstrapRequired = false;
           this.warmLocked = true;
           this.ensureAuthorizedActiveView();
@@ -112,15 +168,9 @@ export const useAuthStore = defineStore("auth", {
 
         const bootstrap = await this.api().getBootstrapStatus();
         this.bootstrapRequired = bootstrap.requiresBootstrap;
-        this.currentUser = null;
-        this.sessionSecret = null;
-        this.warmLocked = false;
-        this.activeView = "overview";
+        this.clearSessionState();
       } catch (error) {
-        this.currentUser = null;
-        this.sessionSecret = null;
-        this.warmLocked = false;
-        this.activeView = "overview";
+        this.clearSessionState();
         try {
           const bootstrap = await this.api().getBootstrapStatus();
           this.bootstrapRequired = bootstrap.requiresBootstrap;
@@ -144,6 +194,7 @@ export const useAuthStore = defineStore("auth", {
         this.sessionTimeoutMinutes = result.sessionTimeoutMinutes;
         this.bootstrapRequired = false;
         this.warmLocked = false;
+        this.persistWarmLockContext(null);
         this.ensureAuthorizedActiveView();
       } catch (error) {
         this.error = error instanceof Error ? error.message : "Bootstrap failed";
@@ -165,6 +216,7 @@ export const useAuthStore = defineStore("auth", {
         this.sessionTimeoutMinutes = result.sessionTimeoutMinutes;
         this.bootstrapRequired = false;
         this.warmLocked = false;
+        this.persistWarmLockContext(null);
         this.ensureAuthorizedActiveView();
       } catch (error) {
         this.error = error instanceof Error ? error.message : "Login failed";
@@ -194,16 +246,13 @@ export const useAuthStore = defineStore("auth", {
       this.warmLockMinutes = result.warmLockMinutes;
       this.sessionTimeoutMinutes = result.sessionTimeoutMinutes;
       this.warmLocked = false;
+      this.persistWarmLockContext(null);
       this.ensureAuthorizedActiveView();
     },
 
     async logout() {
       await this.api().logout();
-      this.currentUser = null;
-      this.sessionSecret = null;
-      this.hasPin = false;
-      this.warmLocked = false;
-      this.activeView = "overview";
+      this.clearSessionState();
     },
 
     setStationToken(value: string) {
@@ -225,6 +274,12 @@ export const useAuthStore = defineStore("auth", {
           await this.api().warmLock();
           this.sessionSecret = null;
           this.warmLocked = true;
+          this.persistWarmLockContext({
+            currentUser: this.currentUser,
+            hasPin: this.hasPin,
+            warmLockMinutes: this.warmLockMinutes,
+            sessionTimeoutMinutes: this.sessionTimeoutMinutes
+          });
         } catch (error) {
           await this.logout();
           throw error;

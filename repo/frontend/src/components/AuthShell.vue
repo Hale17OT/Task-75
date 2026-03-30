@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import { computed, toRefs } from "vue";
 import SectionCard from "./SectionCard.vue";
 import type { SessionUser } from "../types";
 
-defineProps<{
+const props = defineProps<{
   currentUser: SessionUser | null;
   sessionSecret: string | null;
   hasPin: boolean;
@@ -17,6 +18,7 @@ defineProps<{
     bootstrapFullName: string;
   };
 }>();
+const { currentUser, sessionSecret, hasPin, bootstrapRequired, error, loading, stationToken, form } = toRefs(props);
 
 const emit = defineEmits<{
   "update:stationToken": [value: string];
@@ -24,6 +26,10 @@ const emit = defineEmits<{
   reenter: [];
   bootstrap: [];
 }>();
+
+const pinPattern = /^\d{4,6}$/;
+const isPinValid = computed(() => pinPattern.test(props.form.pin));
+const showPinValidation = computed(() => props.form.pin.length > 0 && !isPinValid.value);
 </script>
 
 <template>
@@ -44,8 +50,16 @@ const emit = defineEmits<{
           <p class="text-sm leading-6 text-slate-600">
             An active workstation session was found for {{ currentUser.username }}. Re-enter the PIN on this same station to resume without a full password sign-in.
           </p>
-          <input v-model="form.pin" type="password" class="w-full rounded-2xl border border-slate-300 px-4 py-3" placeholder="PIN" />
-          <button class="rounded-2xl bg-accent px-5 py-3 text-sm font-semibold text-white" :disabled="loading" @click="emit('reenter')">
+          <input
+            v-model="form.pin"
+            type="password"
+            inputmode="numeric"
+            maxlength="6"
+            class="w-full rounded-2xl border border-slate-300 px-4 py-3"
+            placeholder="PIN"
+          />
+          <p v-if="showPinValidation" class="text-xs font-semibold text-danger">PIN must be 4 to 6 digits.</p>
+          <button class="rounded-2xl bg-accent px-5 py-3 text-sm font-semibold text-white" :disabled="loading || !isPinValid" @click="emit('reenter')">
             Resume with PIN
           </button>
         </template>

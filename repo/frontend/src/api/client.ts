@@ -10,7 +10,6 @@ import type {
   RecipientSummary,
   ReportInboxItem,
   ReportScheduleSummary,
-  RestoreSessionResponse,
   SessionInfo
 } from "../types";
 
@@ -146,13 +145,6 @@ export const createApiClient = (getSessionSecret: () => string | null, getStatio
       signedRequest<{ requiresBootstrap: boolean }>("GET", "/api/auth/bootstrap/status", undefined, {
         unsigned: true
       }),
-    restoreSession: () =>
-      signedRequest<RestoreSessionResponse>(
-        "POST",
-        "/api/auth/restore",
-        undefined,
-        { unsigned: true }
-      ),
     bootstrapAdministrator: (body: { username: string; fullName: string; password: string }) =>
       signedRequest<{ currentUser: SessionInfo["currentUser"]; sessionSecret: string; hasPin: boolean; warmLockMinutes: number; sessionTimeoutMinutes: number }>(
         "POST",
@@ -168,7 +160,9 @@ export const createApiClient = (getSessionSecret: () => string | null, getStatio
         { unsigned: true }
       ),
     getSession: () =>
-      signedRequest<{ session: SessionInfo | null }>("GET", "/api/auth/session"),
+      signedRequest<{ session: SessionInfo | null }>("GET", "/api/auth/session", undefined, {
+        unsigned: true
+      }),
     getSelfProfile: () => signedRequest<{ member: MemberSummary }>("GET", "/api/self/profile"),
     setOwnFaceConsent: (consentStatus: "granted" | "declined") =>
       signedRequest<{ member: MemberSummary }>("POST", "/api/self/consent/face", { consentStatus }),

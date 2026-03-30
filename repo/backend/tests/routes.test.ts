@@ -1,11 +1,53 @@
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import type { Database } from "../src/database.js";
 import { AppError } from "../src/errors.js";
 import { createSignaturePayload, signPayload } from "../src/security.js";
 import { baseConfig, createStubDatabase } from "./test-helpers.js";
 
-const createServices = (options?: { roles?: Array<"Member" | "Coach" | "Administrator">; config?: typeof baseConfig }) => {
+const createNonceAwareDatabase = (): Database => {
+  const base = createStubDatabase(true);
+  const nonceExpirations = new Map<string, number>();
+  return {
+    ...base,
+    async execute(sql: string, params: unknown[] = []) {
+      if (sql.includes("DELETE FROM request_nonces")) {
+        const now = Date.now();
+        for (const [key, expiresAt] of nonceExpirations.entries()) {
+          if (expiresAt <= now) {
+            nonceExpirations.delete(key);
+          }
+        }
+        return;
+      }
+
+      if (sql.includes("INSERT INTO request_nonces")) {
+        const sessionTokenHash = String(params[0] ?? "");
+        const nonce = String(params[1] ?? "");
+        const ttlSeconds = Number(params[2] ?? 0);
+        const key = `${sessionTokenHash}:${nonce}`;
+        const now = Date.now();
+        const existing = nonceExpirations.get(key);
+        if (existing && existing > now) {
+          const duplicateError = new Error("Duplicate nonce");
+          (duplicateError as { code?: string }).code = "ER_DUP_ENTRY";
+          throw duplicateError;
+        }
+        nonceExpirations.set(key, now + ttlSeconds * 1000);
+        return;
+      }
+
+      await base.execute(sql, params);
+    }
+  };
+};
+
+const createServices = (options?: {
+  roles?: Array<"Member" | "Coach" | "Administrator">;
+  config?: typeof baseConfig;
+  database?: Database;
+}) => {
   const sessionSecret = Buffer.alloc(32, 9).toString("base64");
   const roles = options?.roles ?? ["Administrator", "Coach", "Member"];
   const authService = {
@@ -164,7 +206,7 @@ const createServices = (options?: { roles?: Array<"Member" | "Coach" | "Administ
     hardenStoredArtifacts: vi.fn(async () => {})
   };
 
-  const app = createApp(options?.config ?? baseConfig, createStubDatabase(true), {
+  const app = createApp(options?.config ?? baseConfig, options?.database ?? createStubDatabase(true), {
     authService: authService as never,
     loggingService: loggingService as never,
     memberService: {
@@ -317,6 +359,35 @@ describe("route and middleware behavior", () => {
     expect(response.body.error.code).toBe("signature_missing");
   });
 
+  it("rate-limits invalid signature attempts on protected routes", async () => {
+    const { app } = createServices({
+      config: {
+        ...baseConfig,
+        AUTH_RATE_LIMIT_PER_MINUTE: 2
+      }
+    });
+
+    await request(app)
+      .get("/api/admin/console")
+      .set("Cookie", "sf_session=session-token; sf_workstation=binding-token")
+      .set("x-station-token", "Front-Desk-01")
+      .expect(401);
+
+    await request(app)
+      .get("/api/admin/console")
+      .set("Cookie", "sf_session=session-token; sf_workstation=binding-token")
+      .set("x-station-token", "Front-Desk-01")
+      .expect(401);
+
+    const limited = await request(app)
+      .get("/api/admin/console")
+      .set("Cookie", "sf_session=session-token; sf_workstation=binding-token")
+      .set("x-station-token", "Front-Desk-01");
+
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("rate_limited");
+  });
+
   it("allows protected admin routes when the signed-session headers are valid", async () => {
     const { app, sessionSecret } = createServices();
 
@@ -366,20 +437,45 @@ describe("route and middleware behavior", () => {
     expect(response.body.error.code).toBe("pin_context_invalid");
   });
 
-  it("supports unsigned restore requests and signed PIN setup/logout flows", async () => {
-    const { app, sessionSecret, authService } = createServices();
+  it("restores session state from cookies without requiring signed headers", async () => {
+    const { app } = createServices();
 
-    const restoreResponse = await request(app)
-      .post("/api/auth/restore")
+    const response = await request(app)
+      .get("/api/auth/session")
       .set("Cookie", "sf_session=session-token; sf_workstation=binding-token")
       .set("x-station-token", "Front-Desk-01")
       .expect(200);
-    expect(restoreResponse.body.data.session).toBeNull();
-    expect(restoreResponse.body.data.warmLocked).toBe(true);
+
+    expect(response.body.data.session).toEqual(
+      expect.objectContaining({
+        warmLocked: false,
+        sessionSecret: expect.any(String)
+      })
+    );
+  });
+
+  it("rejects unsigned session-restore attempts when workstation binding is missing", async () => {
+    const { app, authService } = createServices();
+    authService.assertWorkstationBinding.mockRejectedValueOnce(
+      new AppError(401, "workstation_binding_required", "A trusted workstation binding is required")
+    );
+
+    const response = await request(app)
+      .get("/api/auth/session")
+      .set("Cookie", "sf_session=session-token")
+      .set("x-station-token", "Front-Desk-01");
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe("workstation_binding_required");
+  });
+
+  it("supports signed session and PIN setup/logout flows", async () => {
+    const { app, sessionSecret, authService } = createServices();
 
     await request(app)
       .get("/api/auth/session")
-      .set(signedHeaders("GET", "/api/auth/session", sessionSecret))
+      .set("Cookie", "sf_session=session-token; sf_workstation=binding-token")
+      .set("x-station-token", "Front-Desk-01")
       .expect(200);
 
     const pinBody = { pin: "1234" };
@@ -421,88 +517,29 @@ describe("route and middleware behavior", () => {
     expect(authService.login).toHaveBeenCalledWith("admin", "Admin12345!X", expect.any(String), "Desk-A");
   });
 
-  it("never discloses session secrets from unsigned restore responses", async () => {
-    const { app, authService } = createServices();
-    authService.restoreSession.mockResolvedValueOnce({
-      status: "warm_locked",
-      currentUser: {
-        id: 1,
-        username: "admin",
-        fullName: "System Administrator",
-        roles: ["Administrator", "Coach", "Member"]
-      },
-      hasPin: true,
-      warmLockMinutes: 5,
-      sessionTimeoutMinutes: 30,
-      lastActivityAt: new Date().toISOString()
-    } as never);
+  it("applies uniform per-IP API rate limits to auth status and session endpoints", async () => {
+    const limitedConfig = {
+      ...baseConfig,
+      API_RATE_LIMIT_PER_MINUTE: 2
+    };
+    const { app } = createServices({ config: limitedConfig });
 
-    const restoreResponse = await request(app)
-      .post("/api/auth/restore")
-      .set("Cookie", "sf_session=session-token; sf_workstation=binding-token")
-      .set("x-station-token", "Front-Desk-01");
+    await request(app)
+      .get("/api/auth/bootstrap/status")
+      .set("x-station-token", "Desk-A")
+      .expect(200);
 
-    expect(restoreResponse.status).toBe(200);
-    expect(restoreResponse.body.data.session).toBeNull();
-    expect(restoreResponse.body.data.sessionSecret).toBeUndefined();
-  });
+    await request(app)
+      .get("/api/auth/session")
+      .set("x-station-token", "Desk-A")
+      .expect(200);
 
-  it("allows warm-locked restore responses while protected APIs remain blocked", async () => {
-    const { app, sessionSecret, authService } = createServices();
-    authService.restoreSession.mockResolvedValueOnce({
-      status: "warm_locked",
-      currentUser: {
-        id: 1,
-        username: "admin",
-        fullName: "System Administrator",
-        roles: ["Administrator", "Coach", "Member"]
-      },
-      hasPin: true,
-      warmLockMinutes: 5,
-      sessionTimeoutMinutes: 30,
-      lastActivityAt: new Date().toISOString()
-    });
+    const limitedResponse = await request(app)
+      .get("/api/auth/bootstrap/status")
+      .set("x-station-token", "Desk-A");
 
-    const restoreResponse = await request(app)
-      .post("/api/auth/restore")
-      .set("Cookie", "sf_session=session-token; sf_workstation=binding-token")
-      .set("x-station-token", "Front-Desk-01");
-
-    expect(restoreResponse.status).toBe(200);
-    expect(restoreResponse.body.data.warmLocked).toBe(true);
-    expect(restoreResponse.body.data.session).toBeNull();
-
-    authService.getSession.mockResolvedValueOnce({
-      currentUser: {
-        id: 1,
-        username: "admin",
-        fullName: "System Administrator",
-        roles: ["Administrator", "Coach", "Member"]
-      },
-      session: {
-        id: 1,
-        userId: 1,
-        sessionToken: "session-token",
-        sessionSecret,
-        sessionSecretKeyId: "key-1",
-        stationToken: "Front-Desk-01",
-        workstationBindingHash: "hash:binding-token",
-        warmLockedAt: new Date() as Date | null,
-        lastActivityAt: new Date(),
-        createdAt: new Date(),
-        revokedAt: null
-      },
-      hasPin: true,
-      warmLockMinutes: 5,
-      sessionTimeoutMinutes: 30
-    } as never);
-
-    const blocked = await request(app)
-      .get("/api/admin/console")
-      .set(signedHeaders("GET", "/api/admin/console", sessionSecret));
-
-    expect(blocked.status).toBe(423);
-    expect(blocked.body.error.code).toBe("warm_locked");
+    expect(limitedResponse.status).toBe(429);
+    expect(limitedResponse.body.error.code).toBe("rate_limited");
   });
 
   it("rejects protected API access while the session is warm locked", async () => {
@@ -683,6 +720,47 @@ describe("route and middleware behavior", () => {
 
     expect(response.status).toBe(401);
     expect(response.body.error.code).toBe("signature_invalid");
+  });
+
+  it("rejects nonce replay across app restarts using durable nonce storage", async () => {
+    const sharedDatabase = createNonceAwareDatabase();
+    const { app: firstApp, sessionSecret } = createServices({
+      database: sharedDatabase
+    });
+    const timestamp = new Date().toISOString();
+    const nonce = "nonce-restart-replay";
+    const signature = signPayload(
+      sessionSecret,
+      createSignaturePayload("GET", "/api/admin/console", timestamp, nonce, undefined)
+    );
+
+    await request(firstApp)
+      .get("/api/admin/console")
+      .set({
+        Cookie: "sf_session=session-token; sf_workstation=binding-token",
+        "x-station-token": "Front-Desk-01",
+        "x-sf-timestamp": timestamp,
+        "x-sf-nonce": nonce,
+        "x-sf-signature": signature
+      })
+      .expect(200);
+
+    const { app: restartedApp } = createServices({
+      database: sharedDatabase
+    });
+
+    const replayResponse = await request(restartedApp)
+      .get("/api/admin/console")
+      .set({
+        Cookie: "sf_session=session-token; sf_workstation=binding-token",
+        "x-station-token": "Front-Desk-01",
+        "x-sf-timestamp": timestamp,
+        "x-sf-nonce": nonce,
+        "x-sf-signature": signature
+      });
+
+    expect(replayResponse.status).toBe(401);
+    expect(replayResponse.body.error.code).toBe("nonce_replayed");
   });
 
   it("covers the protected route families with valid signed requests", async () => {

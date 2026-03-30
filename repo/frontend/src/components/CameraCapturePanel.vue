@@ -16,6 +16,9 @@ const videoRef = ref<HTMLVideoElement | null>(null);
 const stream = ref<MediaStream | null>(null);
 const error = ref<string | null>(null);
 const busy = ref(false);
+const maxImportBytes = 5 * 1024 * 1024;
+const minImportWidth = 640;
+const minImportHeight = 480;
 
 const hasPreview = computed(() => Boolean(props.modelValue));
 
@@ -69,22 +72,62 @@ const captureFrame = () => {
   stopCamera();
 };
 
+const readFileAsDataUrl = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+const getImageDimensions = (dataUrl: string) =>
+  new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      resolve({
+        width: image.naturalWidth || image.width,
+        height: image.naturalHeight || image.height
+      });
+    };
+    image.onerror = () => reject(new Error("Could not read image dimensions"));
+    image.src = dataUrl;
+  });
+
 const onFilePicked = async (event: Event) => {
-  const file = (event.target as HTMLInputElement).files?.[0];
+  error.value = null;
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
   if (!file) {
     return;
   }
 
-  const reader = new FileReader();
-  await new Promise<void>((resolve, reject) => {
-    reader.onload = () => {
-      emit("update:modelValue", String(reader.result));
-      emit("update:sourceType", "import");
-      resolve();
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
+  const supportedTypes = ["image/png", "image/jpeg"];
+  if (!supportedTypes.includes(file.type)) {
+    error.value = "Only JPG and PNG images are supported.";
+    input.value = "";
+    return;
+  }
+
+  if (file.size > maxImportBytes) {
+    error.value = "Image must be 5 MB or smaller.";
+    input.value = "";
+    return;
+  }
+
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    const { width, height } = await getImageDimensions(dataUrl);
+    if (width < minImportWidth || height < minImportHeight) {
+      error.value = "Image must be at least 640x480 pixels.";
+      input.value = "";
+      return;
+    }
+
+    emit("update:modelValue", dataUrl);
+    emit("update:sourceType", "import");
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : "Image import failed";
+  }
 };
 
 onBeforeUnmount(stopCamera);
@@ -96,7 +139,7 @@ onBeforeUnmount(stopCamera);
       <div>
         <p class="text-sm font-semibold text-ink">{{ label }}</p>
         <p class="mt-1 text-xs leading-5 text-slate-500">
-          Capture from the front-desk camera or import a JPG/PNG file up to 5 MB.
+          Capture from the front-desk camera or import a JPG/PNG file up to 5 MB and at least 640x480.
         </p>
         <p class="mt-1 text-xs text-slate-500">Audit source: {{ sourceType }}</p>
       </div>

@@ -7,6 +7,7 @@ import FaceImageAnnotator from "../src/components/FaceImageAnnotator.vue";
 import FaceOpsView from "../src/components/FaceOpsView.vue";
 import OverviewView from "../src/components/OverviewView.vue";
 import ReportsView from "../src/components/ReportsView.vue";
+import WarmLockModal from "../src/components/WarmLockModal.vue";
 
 const flushPromises = async () => {
   await Promise.resolve();
@@ -46,7 +47,16 @@ vi.mock("@tensorflow/tfjs", () => ({
 }));
 
 class MockImage {
-  src = "";
+  naturalWidth = 1280;
+  naturalHeight = 720;
+  width = 1280;
+  height = 720;
+  onload: null | (() => void) = null;
+  onerror: null | (() => void) = null;
+
+  set src(_value: string) {
+    queueMicrotask(() => this.onload?.());
+  }
 
   decode() {
     return Promise.resolve();
@@ -202,6 +212,38 @@ describe("AuthShell", () => {
 
     await reenterWrapper.get("button").trigger("click");
     expect(reenterWrapper.emitted("reenter")).toHaveLength(1);
+  });
+
+  it("blocks PIN re-entry when the PIN is not 4 to 6 digits", async () => {
+    const wrapper = mount(AuthShell, {
+      props: {
+        currentUser: {
+          id: 1,
+          username: "member",
+          fullName: "Gym Member",
+          roles: ["Member"]
+        },
+        sessionSecret: null,
+        hasPin: true,
+        bootstrapRequired: false,
+        error: null,
+        loading: false,
+        stationToken: "Desk-A",
+        form: {
+          username: "",
+          password: "",
+          pin: "12ab",
+          bootstrapFullName: ""
+        }
+      }
+    });
+
+    const button = wrapper.get("button");
+    expect(button.attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("PIN must be 4 to 6 digits.");
+
+    await button.trigger("click");
+    expect(wrapper.emitted("reenter")).toBeUndefined();
   });
 
   it("renders an immediate duplicate warning banner before final submission", () => {
@@ -370,6 +412,60 @@ describe("AuthShell", () => {
     expect(wrapper.emitted("update:sourceType")?.[0]).toEqual(["import"]);
   });
 
+  it("rejects import files larger than 5 MB before reading", async () => {
+    const wrapper = mount(CameraCapturePanel, {
+      props: {
+        label: "Turn capture",
+        modelValue: "",
+        sourceType: "camera"
+      }
+    });
+
+    const oversized = new File([new Uint8Array(5 * 1024 * 1024 + 1)], "face.png", { type: "image/png" });
+    const fileInput = wrapper.get('input[type="file"]');
+    Object.defineProperty(fileInput.element, "files", {
+      configurable: true,
+      value: [oversized]
+    });
+
+    await fileInput.trigger("change");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Image must be 5 MB or smaller.");
+    expect(wrapper.emitted("update:modelValue")).toBeUndefined();
+    expect(wrapper.emitted("update:sourceType")).toBeUndefined();
+  });
+
+  it("rejects images below 640x480", async () => {
+    class SmallImage extends MockImage {
+      naturalWidth = 320;
+      naturalHeight = 240;
+      width = 320;
+      height = 240;
+    }
+
+    vi.stubGlobal("Image", SmallImage);
+
+    const wrapper = mount(CameraCapturePanel, {
+      props: {
+        label: "Turn capture",
+        modelValue: "",
+        sourceType: "camera"
+      }
+    });
+
+    const fileInput = wrapper.get('input[type="file"]');
+    Object.defineProperty(fileInput.element, "files", {
+      configurable: true,
+      value: [new File(["image"], "face.png", { type: "image/png" })]
+    });
+    await fileInput.trigger("change");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Image must be at least 640x480 pixels.");
+    expect(wrapper.emitted("update:modelValue")).toBeUndefined();
+  });
+
   it("collects landmarks, computes blur guidance, and can reset annotations", async () => {
     const wrapper = mount(FaceImageAnnotator, {
       props: {
@@ -447,6 +543,49 @@ describe("AuthShell", () => {
     expect(wrapper.emitted("update:newPin")?.at(-1)).toEqual(["2222"]);
     expect(wrapper.emitted("savePin")).toHaveLength(1);
     expect(wrapper.emitted("ownConsent")).toHaveLength(2);
+  });
+
+  it("disables PIN save until the value is a valid 4 to 6 digit PIN", async () => {
+    const wrapper = mount(OverviewView, {
+      props: {
+        currentUser: {
+          id: 7,
+          username: "member",
+          fullName: "Member User",
+          roles: ["Member"]
+        },
+        stationToken: "Front-Desk-01",
+        hasPin: true,
+        newPin: "12",
+        memberSelf: null
+      }
+    });
+
+    const button = wrapper.get("button");
+    expect(button.attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("PIN must be 4 to 6 digits.");
+
+    await button.trigger("click");
+    expect(wrapper.emitted("savePin")).toBeUndefined();
+  });
+
+  it("requires a 4 to 6 digit PIN in the warm lock modal", async () => {
+    const wrapper = mount(WarmLockModal);
+
+    const input = wrapper.get("input");
+    const button = wrapper.get("button");
+
+    await input.setValue("12");
+    expect(button.attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("PIN must be 4 to 6 digits.");
+
+    await button.trigger("click");
+    expect(wrapper.emitted("unlock")).toBeUndefined();
+
+    await input.setValue("1234");
+    expect(button.attributes("disabled")).toBeUndefined();
+    await button.trigger("click");
+    expect(wrapper.emitted("unlock")?.[0]).toEqual(["1234"]);
   });
 
   it("emits reports actions for schedule/create/download controls", async () => {

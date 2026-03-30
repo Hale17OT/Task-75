@@ -47,26 +47,6 @@ export const createAuthRouter = (
     ok(res, await authService.getBootstrapStatus());
   }));
 
-  router.post("/restore", rateLimitedSignIn, asyncHandler(async (req, res) => {
-    const session = await authService.restoreSession(
-      req.cookies.sf_session as string | undefined,
-      req.cookies.sf_workstation as string | undefined
-    );
-
-    ok(res, {
-      session: null,
-      warmLocked: session?.status === "warm_locked",
-      currentUser: session ? session.currentUser : null,
-      hasPin: session?.hasPin ?? false,
-      warmLockMinutes: session?.warmLockMinutes ?? config.WARM_LOCK_MINUTES,
-      sessionTimeoutMinutes: session?.sessionTimeoutMinutes ?? config.SESSION_TIMEOUT_MINUTES,
-      lastActivityAt:
-        session?.status === "warm_locked"
-          ? session.lastActivityAt
-          : null
-    });
-  }));
-
   router.post("/bootstrap/admin", rateLimitedSignIn, asyncHandler(async (req, res) => {
     const input = bootstrapSchema.parse(req.body);
     const result = await authService.bootstrapAdministrator(
@@ -158,21 +138,38 @@ export const createAuthRouter = (
     ok(res, { loggedOut: true });
   }));
 
-  router.get("/session", requireSignedSession, asyncHandler(async (req, res) => {
-    if (!req.currentSession || !req.currentUser) {
-      throw new AppError(401, "missing_session", "Session is required");
+  router.get("/session", asyncHandler(async (req, res) => {
+    const sessionToken = req.cookies.sf_session as string | undefined;
+    if (!sessionToken) {
+      ok(res, { session: null });
+      return;
     }
-    const session = await authService.getSession(req.currentSession.sessionToken);
+
+    await authService.assertWorkstationBinding(
+      sessionToken,
+      req.cookies.sf_workstation as string | undefined
+    );
+    const session = await authService.getSession(sessionToken);
+    if (!session) {
+      ok(res, { session: null });
+      return;
+    }
+
+    const warmLocked = Boolean(session.hasPin && session.session.warmLockedAt);
+    if (!warmLocked) {
+      await authService.touchSession(sessionToken);
+    }
+
     ok(res, {
-      session: session
-        ? {
-            currentUser: session.currentUser,
-            hasPin: session.hasPin,
-            warmLockMinutes: config.WARM_LOCK_MINUTES,
-            sessionTimeoutMinutes: config.SESSION_TIMEOUT_MINUTES,
-            lastActivityAt: session.session.lastActivityAt.toISOString()
-          }
-        : null
+      session: {
+        currentUser: session.currentUser,
+        hasPin: session.hasPin,
+        warmLocked,
+        sessionSecret: warmLocked ? null : session.session.sessionSecret,
+        warmLockMinutes: config.WARM_LOCK_MINUTES,
+        sessionTimeoutMinutes: config.SESSION_TIMEOUT_MINUTES,
+        lastActivityAt: session.session.lastActivityAt.toISOString()
+      }
     });
   }));
 

@@ -2,7 +2,6 @@ import { mkdir } from "node:fs/promises";
 import mysql, { type Pool, type PoolConnection, type RowDataPacket } from "mysql2/promise";
 import bcrypt from "bcryptjs";
 import type { AppConfig } from "./config.js";
-import { logger } from "./logger.js";
 import { migrationStatements, schemaStatements, triggerStatements } from "./schema.js";
 
 export interface Database {
@@ -65,37 +64,6 @@ export const createDatabase = (config: AppConfig): Database => {
   });
 
   let pool = createPoolForCredentials(config.MYSQL_USER, config.MYSQL_PASSWORD);
-  let attemptedLegacyFallback = false;
-
-  const tryLegacyLocalCredentialsFallback = async (error: unknown) => {
-    const errorCode = typeof error === "object" && error !== null && "code" in error
-      ? String((error as { code?: unknown }).code)
-      : "";
-    if (errorCode !== "ER_ACCESS_DENIED_ERROR" || attemptedLegacyFallback || config.NODE_ENV === "production") {
-      return false;
-    }
-
-    attemptedLegacyFallback = true;
-    const legacyUser = "sentinelfit";
-    const legacyPassword = "sentinelfit";
-    if (config.MYSQL_USER === legacyUser && config.MYSQL_PASSWORD === legacyPassword) {
-      return false;
-    }
-
-    const legacyPool = createPoolForCredentials(legacyUser, legacyPassword);
-    try {
-      await legacyPool.query("SELECT 1");
-      await pool.end();
-      pool = legacyPool;
-      logger.warn(
-        "Database auth fallback engaged for legacy local credentials; set explicit MYSQL_USER/MYSQL_PASSWORD to migrate cleanly"
-      );
-      return true;
-    } catch {
-      await legacyPool.end();
-      return false;
-    }
-  };
 
   return {
     get pool() {
@@ -323,15 +291,7 @@ export const createDatabase = (config: AppConfig): Database => {
       }
       };
 
-      try {
-        await initializeWithCurrentPool();
-      } catch (error) {
-        const switched = await tryLegacyLocalCredentialsFallback(error);
-        if (!switched) {
-          throw error;
-        }
-        await initializeWithCurrentPool();
-      }
+      await initializeWithCurrentPool();
     }
   };
 };

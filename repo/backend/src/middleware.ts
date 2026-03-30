@@ -1,4 +1,5 @@
 import cookieParser from "cookie-parser";
+import { createHash } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import { AppError, isAppError } from "./errors.js";
@@ -8,36 +9,39 @@ import type { AppConfig } from "./config.js";
 import { createRateLimiter, createSignaturePayload, verifySignature } from "./security.js";
 import type { ReturnTypeOfCreateAuthService } from "./service-types.js";
 import type { createLoggingService } from "./services/logging-service.js";
+import type { Database } from "./database.js";
 
 export type LoggingService = ReturnType<typeof createLoggingService>;
 
 export const createMiddlewareSuite = (
   config: AppConfig,
+  database: Database,
   authService: ReturnTypeOfCreateAuthService,
   loggingService: LoggingService
 ) => {
   const rateLimiter = createRateLimiter();
   const nonceStore = (() => {
-    const values = new Map<string, Map<string, number>>();
-
     return {
-      assertFresh(sessionToken: string, nonce: string) {
-        const now = Date.now();
+      async assertFresh(sessionToken: string, nonce: string) {
         const windowMs = config.HMAC_WINDOW_MINUTES * 60 * 1000;
-        const sessionValues = values.get(sessionToken) ?? new Map<string, number>();
-
-        for (const [key, expiresAt] of sessionValues.entries()) {
-          if (expiresAt <= now) {
-            sessionValues.delete(key);
+        const windowSeconds = Math.max(1, Math.ceil(windowMs / 1000));
+        const sessionTokenHash = createHash("sha256").update(sessionToken).digest("hex");
+        await database.execute("DELETE FROM request_nonces WHERE expires_at <= UTC_TIMESTAMP()");
+        try {
+          await database.execute(
+            `INSERT INTO request_nonces (session_token_hash, nonce, expires_at)
+             VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND))`,
+            [sessionTokenHash, nonce, windowSeconds]
+          );
+        } catch (error) {
+          const code = typeof error === "object" && error !== null && "code" in error
+            ? String((error as { code?: unknown }).code)
+            : "";
+          if (code === "ER_DUP_ENTRY") {
+            throw new AppError(401, "nonce_replayed", "The request nonce has already been used");
           }
+          throw error;
         }
-
-        if (sessionValues.has(nonce)) {
-          throw new AppError(401, "nonce_replayed", "The request nonce has already been used");
-        }
-
-        sessionValues.set(nonce, now + windowMs);
-        values.set(sessionToken, sessionValues);
       }
     };
   })();
@@ -81,6 +85,16 @@ export const createMiddlewareSuite = (
     }
   };
 
+  const rateLimitedApi = (req: Request, _res: Response, next: NextFunction) => {
+    try {
+      const ipAddress = req.ip ?? req.socket.remoteAddress ?? "unknown";
+      rateLimiter.check(`api:${ipAddress}`, config.API_RATE_LIMIT_PER_MINUTE, 60_000);
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+
   const attachStationToken = (req: Request, _res: Response, next: NextFunction) => {
     req.stationToken = req.header("x-station-token") ?? null;
     next();
@@ -112,6 +126,12 @@ export const createMiddlewareSuite = (
 
   const requireSignedSession = async (req: Request, _res: Response, next: NextFunction) => {
     try {
+      rateLimiter.check(
+        `auth:${req.ip ?? req.socket.remoteAddress ?? "unknown"}`,
+        config.AUTH_RATE_LIMIT_PER_MINUTE,
+        60_000
+      );
+
       const sessionToken = req.cookies.sf_session as string | undefined;
       if (!sessionToken) {
         throw new AppError(401, "missing_session", "Session cookie is required");
@@ -144,7 +164,7 @@ export const createMiddlewareSuite = (
         throw new AppError(401, "timestamp_stale", "Timestamp is outside the allowed window");
       }
 
-      nonceStore.assertFresh(sessionToken, nonce);
+      await nonceStore.assertFresh(sessionToken, nonce);
       const requestPath = req.originalUrl || req.path;
       const requestBody =
         req.method === "GET" ||
@@ -159,12 +179,6 @@ export const createMiddlewareSuite = (
       if (!valid) {
         throw new AppError(401, "signature_invalid", "Request signature is invalid");
       }
-
-      rateLimiter.check(
-        `auth:${req.ip ?? req.socket.remoteAddress ?? "unknown"}`,
-        config.AUTH_RATE_LIMIT_PER_MINUTE,
-        60_000
-      );
 
       req.currentUser = sessionData.currentUser;
       req.currentSession = sessionData.session;
@@ -228,6 +242,7 @@ export const createMiddlewareSuite = (
     cookieParser: cookieParser(),
     requestLogger,
     allowlistedIpOnly,
+    rateLimitedApi,
     rateLimitedSignIn,
     attachStationToken,
     optionalSession,

@@ -17,6 +17,7 @@ describe("loadConfig", () => {
 
     expect(config.PORT).toBe(4000);
     expect(config.MYSQL_HOST).toBe("mysql");
+    expect(config.API_RATE_LIMIT_PER_MINUTE).toBe(60);
     expect(config.AUTH_RATE_LIMIT_PER_MINUTE).toBe(60);
     expect(config.IP_ALLOWLIST.length).toBeGreaterThan(0);
   });

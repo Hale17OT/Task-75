@@ -46,8 +46,11 @@ echo "[tests] running backend typecheck"
 echo "[tests] running frontend typecheck"
 (cd frontend && npm run typecheck)
 
-echo "[tests] ensuring Playwright browser is installed"
-npx playwright install chromium
+echo "[tests] ensuring Playwright browser and host dependencies are installed"
+if ! npx playwright install --with-deps chromium; then
+  echo "[tests] playwright --with-deps failed; retrying browser-only install"
+  npx playwright install chromium
+fi
 
 echo "[tests] starting Docker runtime"
 docker compose up --build -d

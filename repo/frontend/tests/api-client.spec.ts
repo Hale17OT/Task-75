@@ -122,7 +122,6 @@ describe("api client", () => {
     const client = createApiClient(() => sessionSecret, () => "Front-Desk-01");
 
     await client.getBootstrapStatus();
-    await client.restoreSession();
     await client.bootstrapAdministrator({ username: "owner", fullName: "Facility Owner", password: "Owner12345!X" });
     await client.getSession();
     await client.getSelfProfile();
@@ -156,6 +155,6 @@ describe("api client", () => {
     await client.dryRunRestore(1);
 
     expect(download.fileName).toBe("weekly-report.pdf");
-    expect(fetchMock).toHaveBeenCalledTimes(33);
+    expect(fetchMock).toHaveBeenCalledTimes(32);
   });
 });

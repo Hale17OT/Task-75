@@ -11,6 +11,7 @@ const csvList = z
   );
 
 const DEFAULT_MASTER_KEY_PLACEHOLDER = "REPLACE_WITH_32_BYTE_BASE64_KEY";
+const AUTO_GENERATE_MASTER_KEY = "AUTO_GENERATE";
 const DEFAULT_DB_USER_PLACEHOLDER = "REPLACE_WITH_DB_USER";
 const DEFAULT_DB_PASSWORD_PLACEHOLDER = "REPLACE_WITH_DB_PASSWORD";
 const WEAK_DB_PASSWORDS = new Set(["sentinelfit", "rootpassword", "password", "changeme", "admin123"]);
@@ -32,6 +33,7 @@ const configSchema = z.object({
   SESSION_TIMEOUT_MINUTES: z.coerce.number().int().min(1).default(30),
   WARM_LOCK_MINUTES: z.coerce.number().int().min(1).default(5),
   LOGIN_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(60),
+  API_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(60),
   AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(60),
   ACCOUNT_LOCK_MINUTES: z.coerce.number().int().min(1).default(15),
   ACCOUNT_LOCK_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(5),
@@ -69,6 +71,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     SESSION_TIMEOUT_MINUTES: env.SESSION_TIMEOUT_MINUTES,
     WARM_LOCK_MINUTES: env.WARM_LOCK_MINUTES,
     LOGIN_RATE_LIMIT_PER_MINUTE: env.LOGIN_RATE_LIMIT_PER_MINUTE,
+    API_RATE_LIMIT_PER_MINUTE: env.API_RATE_LIMIT_PER_MINUTE,
     AUTH_RATE_LIMIT_PER_MINUTE: env.AUTH_RATE_LIMIT_PER_MINUTE,
     ACCOUNT_LOCK_MINUTES: env.ACCOUNT_LOCK_MINUTES,
     ACCOUNT_LOCK_MAX_ATTEMPTS: env.ACCOUNT_LOCK_MAX_ATTEMPTS,
@@ -102,9 +105,11 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     }
   }
 
-  const decodedMasterKey = Buffer.from(config.KEY_VAULT_MASTER_KEY, "base64");
-  if (decodedMasterKey.length !== 32 || decodedMasterKey.toString("base64") !== config.KEY_VAULT_MASTER_KEY) {
-    throw new Error("KEY_VAULT_MASTER_KEY must be valid base64 and decode to exactly 32 bytes");
+  if (config.KEY_VAULT_MASTER_KEY !== AUTO_GENERATE_MASTER_KEY) {
+    const decodedMasterKey = Buffer.from(config.KEY_VAULT_MASTER_KEY, "base64");
+    if (decodedMasterKey.length !== 32 || decodedMasterKey.toString("base64") !== config.KEY_VAULT_MASTER_KEY) {
+      throw new Error("KEY_VAULT_MASTER_KEY must be valid base64 and decode to exactly 32 bytes");
+    }
   }
 
   return config;

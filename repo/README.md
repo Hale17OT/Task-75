@@ -64,6 +64,7 @@ Important environment variables:
 - `BACKEND_REPORTS_SHARED_PATH`
 - `REPORTS_SHARED_HOST_PATH`
 - `BACKEND_IP_ALLOWLIST`
+- `BACKEND_API_RATE_LIMIT_PER_MINUTE`
 - `BACKEND_DEMO_SEED_USERS`
 - `BACKEND_KEY_VAULT_MASTER_KEY`
 - `FRONTEND_PORT`
@@ -182,24 +183,58 @@ The canonical unified test entrypoint is:
 - clean-install Docker restart with demo seeds disabled
 - first-boot Playwright bootstrap verification
 
-Local verification commands are still useful, but Dockerized behavior is authoritative:
+Local verification commands are still useful, but Dockerized behavior is authoritative.
+Before running them directly, install package-local dependencies once:
+
+```bash
+cd backend && npm ci
+cd ../frontend && npm ci
+cd ..
+```
+
+Then run:
 
 ```bash
 cd backend && npm test
 cd backend && npm run typecheck
 cd frontend && npm test
 cd frontend && npm run typecheck
+cd frontend && npm run build
+cd frontend && npm run preview
 npm run test:e2e
 ```
 
 `npm run test:e2e` assumes frontend and backend services are already running and reachable on `127.0.0.1:5173` and `127.0.0.1:3000`. For a self-contained run, use `./run_tests.sh` (Docker canonical path).
+Local non-Docker checks validate source-level behavior and contracts, but deployment/runtime readiness is only guaranteed by the Docker-first path.
+
+### Frontend-only non-Docker review recipe
+
+Use this path when Docker is unavailable and you only need frontend implementation validation:
+
+```bash
+cd frontend
+npm ci
+npm run typecheck
+npm test
+npm run build
+npm run dev
+```
+
+Coverage from this path:
+- Component/composable/store behavior and UI-level validation logic
+- Type safety and production frontend build output
+
+Not covered by this path:
+- Backend/MySQL runtime integration
+- Playwright E2E against live backend services
+- Docker deployment readiness (`docker compose up --build`, `./run_tests.sh`)
 
 ## Operational notes
 
 - Sensitive fields are encrypted with AES-256 via a local key vault whose key material is envelope-encrypted at rest with `BACKEND_KEY_VAULT_MASTER_KEY`.
 - Key metadata is stored in MySQL and historical keys remain available for decrypt-on-read.
-- `KEY_VAULT_MASTER_KEY`, `MYSQL_USER`, `MYSQL_PASSWORD`, and `MYSQL_ROOT_PASSWORD` now have runnable local defaults so `docker compose up --build` works without pre-steps.
-- For production or shared environments, override these defaults with environment-specific secrets before deployment.
+- `KEY_VAULT_MASTER_KEY` defaults to `AUTO_GENERATE`, which creates a per-environment master key on first boot and stores it under the backend data directory.
+- `MYSQL_USER`, `MYSQL_PASSWORD`, and `MYSQL_ROOT_PASSWORD` have local bootstrap defaults for one-command startup; override them for production/shared deployments.
 - Persisted session secrets are encrypted and persisted session identifiers are stored as non-reusable hashes.
 - Biometric audit records are append-only and protected by MySQL triggers.
 - Stored biometric artifacts are encrypted before being written to disk.
@@ -210,7 +245,12 @@ npm run test:e2e
 - Preview-only dedup checks do not persist orphaned biometric artifacts to disk.
 - PIN re-entry is only valid when an active warm session already exists and the browser presents the server-issued workstation binding cookie; the station token remains attribution metadata, not the security proof.
 - PIN re-entry shares the sign-in rate limit path and lockout policy to reduce brute-force exposure.
-- Session-state APIs remain HMAC-signed; the unsigned workstation restore endpoint is limited to warm-lock resume context and never returns session signing secrets.
+- Request-signing policy:
+  - Signed (`x-sf-timestamp` + `x-sf-nonce` + `x-sf-signature`) is required for all authenticated business routes under `/api/self`, `/api/members`, `/api/faces`, `/api/content`, `/api/dashboards`, `/api/reports`, and `/api/admin`.
+  - Unsigned exceptions are limited to pre-auth/session-establishment flows: `/api/auth/bootstrap/status`, `/api/auth/bootstrap/admin`, `/api/auth/login`, `/api/auth/pin/reenter`, and `/api/auth/session`.
+  - Compensating controls for unsigned exceptions include IP allowlist enforcement, auth-route per-IP throttling, credential lockout policy, and workstation-binding cookie validation on `/api/auth/session`.
+  - Replay protection for signed routes uses nonce single-use records stored in MySQL with TTL, so replay history survives process restarts and multi-instance routing.
+- Session-state restoration uses the server session endpoint and keeps the signing secret in memory only, while warm-lock resumes require PIN re-entry.
 - Coach access scope is driven by explicit `coach_location_assignments` records rather than inferred from historical member/content data.
 - Analytics filters are validated server-side before query execution, including malformed date-range rejection.
 - Report exports are written to both a local backend reports directory and the configured shared-folder path.

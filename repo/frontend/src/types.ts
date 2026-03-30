@@ -10,19 +10,11 @@ export interface SessionUser {
 export interface SessionInfo {
   currentUser: SessionUser;
   hasPin: boolean;
+  warmLocked?: boolean;
+  sessionSecret?: string | null;
   warmLockMinutes: number;
   sessionTimeoutMinutes: number;
   lastActivityAt?: string;
-}
-
-export interface RestoreSessionResponse {
-  session: SessionInfo | null;
-  warmLocked: boolean;
-  currentUser: SessionUser | null;
-  hasPin: boolean;
-  warmLockMinutes: number;
-  sessionTimeoutMinutes: number;
-  lastActivityAt: string | null;
 }
 
 export interface MemberSummary {

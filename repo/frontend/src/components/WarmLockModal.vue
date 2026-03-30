@@ -1,11 +1,22 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 
 const emit = defineEmits<{
   unlock: [pin: string];
 }>();
 
 const pin = ref("");
+const pinPattern = /^\d{4,6}$/;
+const isPinValid = computed(() => pinPattern.test(pin.value));
+const hasPinInput = computed(() => pin.value.length > 0);
+
+const handleUnlock = () => {
+  if (!isPinValid.value) {
+    return;
+  }
+
+  emit("unlock", pin.value);
+};
 </script>
 
 <template>
@@ -25,13 +36,16 @@ const pin = ref("");
         class="mt-6 w-full rounded-2xl border border-slate-300 px-4 py-3 text-lg tracking-[0.3em]"
         placeholder="Enter PIN"
       />
+      <p v-if="hasPinInput && !isPinValid" class="mt-2 text-xs font-semibold text-danger">
+        PIN must be 4 to 6 digits.
+      </p>
       <button
         class="mt-5 inline-flex w-full items-center justify-center rounded-2xl bg-accent px-4 py-3 text-sm font-semibold text-white transition hover:opacity-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-        @click="emit('unlock', pin)"
+        :disabled="!isPinValid"
+        @click="handleUnlock"
       >
         Resume workstation
       </button>
     </div>
   </div>
 </template>
-

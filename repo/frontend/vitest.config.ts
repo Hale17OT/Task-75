@@ -10,6 +10,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       exclude: [
+        "dist/**",
         "postcss.config.cjs",
         "tailwind.config.ts",
         "vite.config.ts",

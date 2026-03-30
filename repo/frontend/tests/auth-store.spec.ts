@@ -6,7 +6,6 @@ const apiMock = {
   getBootstrapStatus: vi.fn(),
   bootstrapAdministrator: vi.fn(),
   login: vi.fn(),
-  restoreSession: vi.fn(),
   getSession: vi.fn(),
   setupPin: vi.fn(),
   pinReenter: vi.fn(),
@@ -46,20 +45,22 @@ describe("auth store", () => {
     Object.values(apiMock).forEach((mock) => mock.mockReset());
   });
 
-  it("uses restore only for warm-locked PIN context and never hydrates a signing secret", async () => {
-    apiMock.restoreSession.mockResolvedValueOnce({
-      session: null,
-      warmLocked: true,
-      currentUser: {
-        id: 1,
-        username: "admin",
-        fullName: "System Administrator",
-        roles: ["Administrator", "Coach", "Member"]
-      },
-      hasPin: true,
-      warmLockMinutes: 5,
-      sessionTimeoutMinutes: 30,
-      lastActivityAt: "2026-03-29T10:00:00.000Z"
+  it("restores active session from the server session endpoint", async () => {
+    apiMock.getSession.mockResolvedValueOnce({
+      session: {
+        currentUser: {
+          id: 1,
+          username: "admin",
+          fullName: "System Administrator",
+          roles: ["Administrator", "Coach", "Member"]
+        },
+        sessionSecret: "restored-secret",
+        warmLocked: false,
+        hasPin: true,
+        warmLockMinutes: 5,
+        sessionTimeoutMinutes: 30,
+        lastActivityAt: "2026-03-29T10:00:00.000Z"
+      }
     });
 
     const store = useAuthStore();
@@ -67,24 +68,25 @@ describe("auth store", () => {
 
     expect(store.bootstrapRequired).toBe(false);
     expect(store.currentUser?.username).toBe("admin");
-    expect(store.sessionSecret).toBeNull();
-    expect(store.warmLocked).toBe(true);
+    expect(store.sessionSecret).toBe("restored-secret");
+    expect(store.warmLocked).toBe(false);
   });
 
   it("bootstraps warm-locked workstation state for PIN resume", async () => {
-    apiMock.restoreSession.mockResolvedValueOnce({
-      session: null,
-      warmLocked: true,
-      currentUser: {
-        id: 1,
-        username: "admin",
-        fullName: "System Administrator",
-        roles: ["Administrator", "Coach", "Member"]
-      },
-      hasPin: true,
-      warmLockMinutes: 5,
-      sessionTimeoutMinutes: 30,
-      lastActivityAt: "2026-03-29T10:00:00.000Z"
+    apiMock.getSession.mockResolvedValueOnce({
+      session: {
+        currentUser: {
+          id: 1,
+          username: "admin",
+          fullName: "System Administrator",
+          roles: ["Administrator", "Coach", "Member"]
+        },
+        sessionSecret: null,
+        warmLocked: true,
+        hasPin: true,
+        warmLockMinutes: 5,
+        sessionTimeoutMinutes: 30
+      }
     });
 
     const store = useAuthStore();
@@ -97,15 +99,7 @@ describe("auth store", () => {
   });
 
   it("switches into bootstrap mode when no administrator exists yet", async () => {
-    apiMock.restoreSession.mockResolvedValueOnce({
-      session: null,
-      warmLocked: false,
-      currentUser: null,
-      hasPin: false,
-      warmLockMinutes: 5,
-      sessionTimeoutMinutes: 30,
-      lastActivityAt: null
-    });
+    apiMock.getSession.mockRejectedValueOnce(new Error("missing secret"));
     apiMock.getBootstrapStatus.mockResolvedValueOnce({ requiresBootstrap: true });
 
     const store = useAuthStore();
@@ -138,7 +132,7 @@ describe("auth store", () => {
     expect(store.sessionSecret).toBe("bootstrap-secret");
   });
 
-  it("logs in, stores the session secret, and clears warm lock state", async () => {
+  it("logs in and keeps the session secret in memory only", async () => {
     apiMock.login.mockResolvedValueOnce({
       currentUser: {
         id: 1,
@@ -241,6 +235,7 @@ describe("auth store", () => {
     expect(window.localStorage.getItem("sentinelfit.stationToken")).toBe("Lobby-Kiosk-01");
     expect(store.warmLocked).toBe(true);
     expect(store.sessionSecret).toBeNull();
+    expect(window.localStorage.getItem("sentinelfit.warmLockContext")).not.toBeNull();
     expect(apiMock.warmLock).toHaveBeenCalled();
   });
 

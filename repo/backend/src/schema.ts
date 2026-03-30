@@ -40,6 +40,16 @@ CREATE TABLE IF NOT EXISTS sessions (
   CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS request_nonces (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  session_token_hash VARCHAR(64) NOT NULL,
+  nonce VARCHAR(100) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_request_nonce (session_token_hash, nonce),
+  KEY idx_request_nonce_expires (expires_at)
+);
+
 CREATE TABLE IF NOT EXISTS failed_login_attempts (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   username VARCHAR(100) NOT NULL,

@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "test": "vitest run --coverage",
-    "typecheck": "vue-tsc --noEmit"
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "npm exec -- vitest run --coverage",
+    "typecheck": "npm exec -- vue-tsc --noEmit"
   },
   "dependencies": {
     "@tensorflow/tfjs": "^4.22.0",

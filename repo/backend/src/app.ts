@@ -35,7 +35,7 @@ interface AppServices {
 
 export const createApp = (config: AppConfig, database: Database, services: AppServices) => {
   const app = express();
-  const middleware = createMiddlewareSuite(config, services.authService, services.loggingService);
+  const middleware = createMiddlewareSuite(config, database, services.authService, services.loggingService);
 
   app.use(
     cors({
@@ -63,6 +63,7 @@ export const createApp = (config: AppConfig, database: Database, services: AppSe
 
   app.use(
     "/api/auth",
+    middleware.rateLimitedApi,
     middleware.optionalSession,
     createAuthRouter(
       services.authService,
