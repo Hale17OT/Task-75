@@ -25,18 +25,21 @@ rand_b64() {
   fi
 }
 
+echo "[tests] resetting Docker state for deterministic credentials"
+docker compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+
 export BACKEND_DEMO_SEED_USERS="${BACKEND_DEMO_SEED_USERS:-true}"
 if [ -z "${MYSQL_USER:-}" ] || [ "${MYSQL_USER}" = "REPLACE_WITH_DB_USER" ]; then
   export MYSQL_USER="sentinelfit_app"
   echo "[tests] set MYSQL_USER for test runtime"
 fi
 if [ -z "${MYSQL_PASSWORD:-}" ] || [ "${MYSQL_PASSWORD}" = "REPLACE_WITH_DB_PASSWORD" ] || [ "${MYSQL_PASSWORD}" = "sentinelfit" ]; then
-  export MYSQL_PASSWORD="$(rand_hex 24)"
-  echo "[tests] generated strong MYSQL_PASSWORD for test runtime"
+  export MYSQL_PASSWORD="SentinelFitLocal_DB_9f3c1a2b"
+  echo "[tests] set MYSQL_PASSWORD to compose-compatible default for test runtime"
 fi
 if [ -z "${MYSQL_ROOT_PASSWORD:-}" ] || [ "${MYSQL_ROOT_PASSWORD}" = "REPLACE_WITH_DB_ROOT_PASSWORD" ] || [ "${MYSQL_ROOT_PASSWORD}" = "rootpassword" ]; then
-  export MYSQL_ROOT_PASSWORD="$(rand_hex 24)"
-  echo "[tests] generated strong MYSQL_ROOT_PASSWORD for test runtime"
+  export MYSQL_ROOT_PASSWORD="SentinelFitLocal_Root_6a8d2c4e"
+  echo "[tests] set MYSQL_ROOT_PASSWORD to compose-compatible default for test runtime"
 fi
 if [ -z "${BACKEND_KEY_VAULT_MASTER_KEY:-}" ] || [ "${BACKEND_KEY_VAULT_MASTER_KEY}" = "REPLACE_WITH_32_BYTE_BASE64_KEY" ]; then
   export BACKEND_KEY_VAULT_MASTER_KEY="$(rand_b64 32)"
