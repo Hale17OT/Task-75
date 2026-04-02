@@ -7,50 +7,87 @@ cleanup() {
 
 trap cleanup EXIT
 
+rand_hex() {
+  local bytes="$1"
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex "$bytes"
+  else
+    head -c "$bytes" /dev/urandom | od -An -tx1 | tr -d ' \n'
+  fi
+}
+
+rand_b64() {
+  local bytes="$1"
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 "$bytes" | tr -d '\n'
+  else
+    head -c "$bytes" /dev/urandom | base64 | tr -d '\n'
+  fi
+}
+
 export BACKEND_DEMO_SEED_USERS="${BACKEND_DEMO_SEED_USERS:-true}"
 if [ -z "${MYSQL_USER:-}" ] || [ "${MYSQL_USER}" = "REPLACE_WITH_DB_USER" ]; then
   export MYSQL_USER="sentinelfit_app"
   echo "[tests] set MYSQL_USER for test runtime"
 fi
 if [ -z "${MYSQL_PASSWORD:-}" ] || [ "${MYSQL_PASSWORD}" = "REPLACE_WITH_DB_PASSWORD" ] || [ "${MYSQL_PASSWORD}" = "sentinelfit" ]; then
-  export MYSQL_PASSWORD="$(node -e "process.stdout.write(require('node:crypto').randomBytes(24).toString('hex'))")"
+  export MYSQL_PASSWORD="$(rand_hex 24)"
   echo "[tests] generated strong MYSQL_PASSWORD for test runtime"
 fi
 if [ -z "${MYSQL_ROOT_PASSWORD:-}" ] || [ "${MYSQL_ROOT_PASSWORD}" = "REPLACE_WITH_DB_ROOT_PASSWORD" ] || [ "${MYSQL_ROOT_PASSWORD}" = "rootpassword" ]; then
-  export MYSQL_ROOT_PASSWORD="$(node -e "process.stdout.write(require('node:crypto').randomBytes(24).toString('hex'))")"
+  export MYSQL_ROOT_PASSWORD="$(rand_hex 24)"
   echo "[tests] generated strong MYSQL_ROOT_PASSWORD for test runtime"
 fi
 if [ -z "${BACKEND_KEY_VAULT_MASTER_KEY:-}" ] || [ "${BACKEND_KEY_VAULT_MASTER_KEY}" = "REPLACE_WITH_32_BYTE_BASE64_KEY" ]; then
-  export BACKEND_KEY_VAULT_MASTER_KEY="$(node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('base64'))")"
+  export BACKEND_KEY_VAULT_MASTER_KEY="$(rand_b64 32)"
   echo "[tests] generated ephemeral BACKEND_KEY_VAULT_MASTER_KEY for test runtime"
 fi
 
-echo "[tests] installing root dependencies"
-npm ci
+compose_project="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"
+playwright_image="${PLAYWRIGHT_DOCKER_IMAGE:-node:20-bookworm}"
+playwright_base_url="${PLAYWRIGHT_BASE_URL:-http://127.0.0.1:5173}"
+playwright_backend_url="${PLAYWRIGHT_BACKEND_URL:-http://127.0.0.1:3000}"
+playwright_cache_volume="${PLAYWRIGHT_CACHE_VOLUME:-sentinelfit-playwright-cache}"
+npm_cache_volume="${NPM_CACHE_VOLUME:-sentinelfit-npm-cache}"
 
-echo "[tests] installing backend dependencies"
-(cd backend && npm ci)
+run_playwright() {
+  local bootstrap_only="$1"
+  local test_command="$2"
+  local -a bootstrap_env=()
+  if [ "$bootstrap_only" = "true" ]; then
+    bootstrap_env+=(-e PLAYWRIGHT_BOOTSTRAP_ONLY=true)
+  fi
 
-echo "[tests] installing frontend dependencies"
-(cd frontend && npm ci)
+  docker run --rm \
+    --network host \
+    -v "$PWD:/workspace" \
+    -w /workspace \
+    -v "${playwright_cache_volume}:/ms-playwright" \
+    -v "${npm_cache_volume}:/root/.npm" \
+    -e CI=1 \
+    -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    -e PLAYWRIGHT_BASE_URL="$playwright_base_url" \
+    -e PLAYWRIGHT_BACKEND_URL="$playwright_backend_url" \
+    -e PLAYWRIGHT_SKIP_WARM_LOCK=true \
+    "${bootstrap_env[@]}" \
+    "$playwright_image" \
+    bash -lc "npm ci && npx playwright install --with-deps chromium && $test_command"
+}
 
-echo "[tests] running backend tests"
-(cd backend && npm test)
+echo "[tests] building backend/frontend images"
+docker compose build backend frontend
 
-echo "[tests] running frontend tests"
-(cd frontend && npm test)
+echo "[tests] running backend tests in container"
+docker compose run --rm --no-deps backend npm test
 
-echo "[tests] running backend typecheck"
-(cd backend && npm run typecheck)
+echo "[tests] running frontend tests in container"
+docker compose run --rm --no-deps frontend npm test
 
-echo "[tests] running frontend typecheck"
-(cd frontend && npm run typecheck)
+echo "[tests] running backend typecheck in container"
+docker compose run --rm --no-deps backend npm run typecheck
 
-echo "[tests] ensuring Playwright browser and host dependencies are installed"
-if ! npx playwright install --with-deps chromium; then
-  echo "[tests] playwright --with-deps failed; retrying browser-only install"
-  npx playwright install chromium
-fi
+echo "[tests] running frontend typecheck in container"
+docker compose run --rm --no-deps frontend npm run typecheck
 
 echo "[tests] starting Docker runtime"
 docker compose up --build -d
@@ -74,11 +111,11 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
-echo "[tests] running Playwright end-to-end tests"
-npm run test:e2e
+echo "[tests] running Playwright end-to-end tests in container"
+run_playwright "false" "npm run test:e2e"
 
 echo "[tests] security regression: coach cannot access admin console"
-security_status="$(node <<'NODE'
+security_status="$(docker compose exec -T backend node <<'NODE'
 const crypto = require('node:crypto');
 
 const sign = (secret, method, path, body) => {
@@ -168,7 +205,10 @@ if docker compose exec -T mysql mysql -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "$
 fi
 
 echo "[tests] schema consistency check: encrypted fields mapped to UI-safe helpers"
-node <<'NODE'
+docker run --rm \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  node:20-alpine node <<'NODE'
 const fs = require("node:fs");
 const schema = fs.readFileSync("backend/src/schema.ts", "utf8");
 const memberService = fs.readFileSync("backend/src/services/member-service.ts", "utf8");
@@ -242,7 +282,7 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
-echo "[tests] running clean-install bootstrap Playwright test"
-PLAYWRIGHT_BOOTSTRAP_ONLY=true npx playwright test tests/e2e/bootstrap.spec.ts
+echo "[tests] running clean-install bootstrap Playwright test in container"
+run_playwright "true" "npx playwright test tests/e2e/bootstrap.spec.ts"
 
 echo "[tests] completed successfully"

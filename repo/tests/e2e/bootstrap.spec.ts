@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+const BACKEND_BASE_URL = process.env.PLAYWRIGHT_BACKEND_URL ?? "http://127.0.0.1:3000";
+
 test.skip(!process.env.PLAYWRIGHT_BOOTSTRAP_ONLY, "Bootstrap scenario runs only in the clean-install verification phase.");
 
 test("clean install allows first administrator bootstrap without demo seeds", async ({ page }) => {
@@ -11,7 +13,7 @@ test("clean install allows first administrator bootstrap without demo seeds", as
   await expect
     .poll(async () => {
       try {
-        const response = await fetch("http://127.0.0.1:3000/health/ready");
+        const response = await fetch(`${BACKEND_BASE_URL}/health/ready`);
         return response.status;
       } catch {
         return 0;
