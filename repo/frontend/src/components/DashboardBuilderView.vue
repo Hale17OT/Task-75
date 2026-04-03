@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import SectionCard from "./SectionCard.vue";
 import type { DashboardWidget } from "../types";
 
@@ -55,7 +55,7 @@ const emit = defineEmits<{
               class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
               @input="emit('updateWidgetTitle', widget.id, ($event.target as HTMLInputElement).value)"
             />
-            <p class="text-xs text-slate-500">{{ widget.widgetType ?? widget.id }} · x={{ widget.x }}, y={{ widget.y }}</p>
+            <p class="text-xs text-slate-500">{{ widget.widgetType ?? widget.id }} | x={{ widget.x }}, y={{ widget.y }}</p>
           </div>
           <button class="rounded-xl border border-rose-300 px-3 py-2 text-xs font-semibold text-rose-700" @click="emit('removeWidget', widget.id)">
             Remove

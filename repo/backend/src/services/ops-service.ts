@@ -9,6 +9,7 @@ import type { AppConfig } from "../config.js";
 import { schemaStatements, triggerStatements } from "../schema.js";
 import type { ReturnTypeOfCreateCryptoService } from "./service-utility-types.js";
 import type { createLoggingService } from "./logging-service.js";
+import { AppError } from "../errors.js";
 
 const backupTables = [
   "users",
@@ -24,6 +25,7 @@ const backupTables = [
   "face_records",
   "face_record_versions",
   "biometric_audit_log",
+  "liveness_challenges",
   "content_posts",
   "content_view_events",
   "search_events",
@@ -40,6 +42,20 @@ const backupTables = [
   "recovery_dry_runs",
   "encryption_keys"
 ];
+
+const parseBackupTimestamp = (fileName: string) => {
+  const match = /^backup-(\d+)\.json$/.exec(fileName);
+  if (!match) {
+    return null;
+  }
+
+  const timestamp = Number(match[1]);
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+
+  return timestamp;
+};
 
 const normalizeRestoreValue = (value: unknown) => {
   if (
@@ -145,14 +161,33 @@ export const createOpsService = (
       `SELECT id FROM backup_runs ORDER BY created_at DESC LIMIT 1`
     );
 
-    const files = (await readdir(backupDir))
-      .filter((file) => file.endsWith(".json"))
-      .sort()
-      .reverse();
+    const files = (await readdir(backupDir)).filter((file) => file.endsWith(".json"));
+    const sortedBackups = files
+      .map((fileName) => ({
+        fileName,
+        timestamp: parseBackupTimestamp(fileName)
+      }))
+      .filter((entry): entry is { fileName: string; timestamp: number } => entry.timestamp !== null)
+      .sort((left, right) => right.timestamp - left.timestamp);
 
-    if (files.length > config.BACKUP_RETENTION_DAYS) {
-      for (const oldFile of files.slice(config.BACKUP_RETENTION_DAYS)) {
-        await rm(join(backupDir, oldFile), { force: true });
+    const retainedDays = new Set<string>();
+    const retainedFiles = new Set<string>();
+    for (const backupEntry of sortedBackups) {
+      const dayBucket = new Date(backupEntry.timestamp).toISOString().slice(0, 10);
+      if (retainedDays.size >= config.BACKUP_RETENTION_DAYS && !retainedDays.has(dayBucket)) {
+        continue;
+      }
+      if (!retainedDays.has(dayBucket)) {
+        retainedDays.add(dayBucket);
+      }
+      if (!retainedFiles.has(backupEntry.fileName)) {
+        retainedFiles.add(backupEntry.fileName);
+      }
+    }
+
+    for (const backupEntry of sortedBackups) {
+      if (!retainedFiles.has(backupEntry.fileName)) {
+        await rm(join(backupDir, backupEntry.fileName), { force: true });
       }
     }
 
@@ -303,6 +338,9 @@ export const createOpsService = (
         [backupRunId]
       );
       const backup = rows[0];
+      if (!backup) {
+        throw new AppError(404, "backup_not_found", "Backup run was not found");
+      }
       const encrypted = JSON.parse(await readFile(String(backup.file_path), "utf8")) as {
         keyId: string;
         cipherText: string;

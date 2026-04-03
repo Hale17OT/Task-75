@@ -12,8 +12,7 @@ import { hammingSimilarity } from "./face/dedup.js";
 import { computeTrustedLivenessScore } from "./face/liveness.js";
 import type {
   FaceDedupPreviewInput,
-  FaceEnrollmentInput,
-  LivenessChallenge
+  FaceEnrollmentInput
 } from "./face/types.js";
 
 export const createFaceService = (
@@ -24,7 +23,6 @@ export const createFaceService = (
   const uploadsDir = join(config.DATA_DIR, "uploads");
   const minLivenessDelayMs = 1_000;
   const maxLivenessDelayMs = 30_000;
-  const challengeStore = new Map<string, LivenessChallenge>();
   const analyzeImage = createFaceImageAnalyzer(cryptoService, uploadsDir);
 
   const assertActorCanAccessMember = async (memberUserId: number, actor: AuthenticatedUser) => {
@@ -139,22 +137,39 @@ export const createFaceService = (
       .sort((left, right) => right.similarity - left.similarity)[0] ?? null;
   };
 
-  const consumeChallenge = (challengeId: string, memberUserId: number, actorUserId: number) => {
-    const challenge = challengeStore.get(challengeId);
+  const clearExpiredChallenges = async () => {
+    await database.execute(
+      `DELETE FROM liveness_challenges
+       WHERE expires_at < UTC_TIMESTAMP()`
+    );
+  };
+
+  const consumeChallenge = async (challengeId: string, memberUserId: number, actorUserId: number) => {
+    await clearExpiredChallenges();
+    const rows = await database.query<RowDataPacket[]>(
+      `SELECT challenge_id, member_user_id, actor_user_id, issued_at, expires_at
+       FROM liveness_challenges
+       WHERE challenge_id = ?
+       LIMIT 1`,
+      [challengeId]
+    );
+    const challenge = rows[0];
     if (!challenge) {
       throw new AppError(400, "capture_timing_invalid", "A valid timed liveness challenge is required");
     }
 
-    if (challenge.memberUserId !== memberUserId || challenge.actorUserId !== actorUserId) {
-      challengeStore.delete(challengeId);
+    await database.execute(`DELETE FROM liveness_challenges WHERE challenge_id = ?`, [challengeId]);
+
+    if (Number(challenge.member_user_id) !== memberUserId || Number(challenge.actor_user_id) !== actorUserId) {
       throw new AppError(403, "capture_timing_invalid", "Timed liveness challenge does not match the active operator context");
     }
 
     const now = Date.now();
-    const captureDelayMs = now - challenge.issuedAt;
-    challengeStore.delete(challengeId);
+    const issuedAtMs = new Date(challenge.issued_at).getTime();
+    const expiresAtMs = new Date(challenge.expires_at).getTime();
+    const captureDelayMs = now - issuedAtMs;
 
-    if (captureDelayMs < minLivenessDelayMs || captureDelayMs > maxLivenessDelayMs || now > challenge.expiresAt) {
+    if (captureDelayMs < minLivenessDelayMs || captureDelayMs > maxLivenessDelayMs || now > expiresAtMs) {
       throw new AppError(
         400,
         "capture_timing_invalid",
@@ -163,7 +178,7 @@ export const createFaceService = (
     }
 
     return {
-      issuedAt: new Date(challenge.issuedAt).toISOString(),
+      issuedAt: new Date(issuedAtMs).toISOString(),
       captureDelayMs
     };
   };
@@ -171,16 +186,15 @@ export const createFaceService = (
   return {
     async startLivenessChallenge(memberUserId: number, actor: AuthenticatedUser) {
       await assertActorCanAccessMember(memberUserId, actor);
+      await clearExpiredChallenges();
       const challengeId = generateSessionToken();
       const issuedAt = Date.now();
       const expiresAt = issuedAt + maxLivenessDelayMs;
-      challengeStore.set(challengeId, {
-        challengeId,
-        memberUserId,
-        actorUserId: actor.id,
-        issuedAt,
-        expiresAt
-      });
+      await database.execute(
+        `INSERT INTO liveness_challenges (challenge_id, member_user_id, actor_user_id, issued_at, expires_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [challengeId, memberUserId, actor.id, new Date(issuedAt), new Date(expiresAt)]
+      );
 
       return {
         challengeId,
@@ -218,7 +232,7 @@ export const createFaceService = (
       await assertActorCanAccessMember(input.memberUserId, actor);
       await ensureConsentGranted(input.memberUserId);
 
-      const challengeWindow = consumeChallenge(input.challengeId, input.memberUserId, input.actorUserId);
+      const challengeWindow = await consumeChallenge(input.challengeId, input.memberUserId, input.actorUserId);
 
       await appendAudit(input.memberUserId, input.actorUserId, "capture_attempted", {
         sourceType: input.sourceType,

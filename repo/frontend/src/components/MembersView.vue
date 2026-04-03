@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import SectionCard from "./SectionCard.vue";
 import type { CoachSummary, MemberSummary } from "../types";
 
@@ -60,7 +60,7 @@ const emit = defineEmits<{
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <p class="text-lg font-semibold">{{ member.fullName }}</p>
-            <p class="text-sm text-slate-600">{{ member.username }} · {{ member.phoneMasked ?? "No phone" }}</p>
+            <p class="text-sm text-slate-600">{{ member.username }} | {{ member.phoneMasked ?? "No phone" }}</p>
             <p class="mt-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
               Consent: {{ member.faceConsentStatus }}
             </p>

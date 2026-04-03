@@ -77,9 +77,15 @@ describe("logging service", () => {
       pin: "1234",
       sessionSecret: "super-secret",
       centerImageBase64: "data:image/png;base64,abc",
+      phone: "+251911234567",
+      phone_encrypted: "cipher-phone",
+      phone_last4: "4567",
+      governmentId: "AA-123456",
+      government_id_encrypted: "cipher-gov",
       nested: {
         session_token: "raw-cookie",
-        average_hash: "template-value"
+        average_hash: "template-value",
+        refresh_token: "refresh-secret"
       }
     });
 
@@ -94,9 +100,15 @@ describe("logging service", () => {
           pin: "[REDACTED]",
           sessionSecret: "[REDACTED]",
           centerImageBase64: "[REDACTED]",
+          phone: "[REDACTED]",
+          phone_encrypted: "[REDACTED]",
+          phone_last4: "[REDACTED]",
+          governmentId: "[REDACTED]",
+          government_id_encrypted: "[REDACTED]",
           nested: {
             session_token: "[REDACTED]",
-            average_hash: "[REDACTED]"
+            average_hash: "[REDACTED]",
+            refresh_token: "[REDACTED]"
           }
         })
       ]

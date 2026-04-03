@@ -684,6 +684,18 @@ describe("route and middleware behavior", () => {
     expect(response.body.error.code).toBe("validation_failed");
   });
 
+  it("rejects semantically invalid analytics dates", async () => {
+    const { app, sessionSecret } = createServices();
+    const path = "/api/content/analytics?startDate=2026-02-31&locationCode=HQ";
+
+    const response = await request(app)
+      .get(path)
+      .set(signedHeaders("GET", path, sessionSecret));
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("validation_failed");
+  });
+
   it("returns forbidden when content routes attempt out-of-scope location access", async () => {
     const { app, sessionSecret, contentService } = createServices();
     contentService.listPosts.mockRejectedValueOnce(

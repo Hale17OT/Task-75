@@ -2,17 +2,47 @@ import type { Database } from "../database.js";
 
 const sensitiveKeys = new Set([
   "password",
+  "password_hash",
   "pin",
-  "sessionSecret",
+  "pin_hash",
+  "passcode",
+  "sessionsecret",
   "session_secret",
-  "sessionToken",
+  "sessiontoken",
   "session_token",
-  "centerImageBase64",
-  "turnImageBase64",
-  "cipherText",
-  "averageHash",
-  "average_hash"
+  "token",
+  "access_token",
+  "refresh_token",
+  "centerimagebase64",
+  "turnimagebase64",
+  "ciphertext",
+  "averagehash",
+  "average_hash",
+  "biometric_hash",
+  "phone",
+  "phoneencrypted",
+  "phone_encrypted",
+  "phonelast4",
+  "phone_last4",
+  "governmentid",
+  "government_id",
+  "government_id_encrypted",
+  "governmentidencrypted",
+  "govid",
+  "gov_id",
+  "nationalid",
+  "national_id"
 ]);
+
+const isSensitiveKey = (key: string) => {
+  const normalized = key.replace(/[^a-zA-Z0-9_]/g, "").toLowerCase();
+  if (sensitiveKeys.has(normalized)) {
+    return true;
+  }
+  return /(password|passcode|pin|session.*secret|session.*token|biometric|average.*hash|face.*hash|phone|government.*id|gov.*id|national.*id|token$|hash$)/.test(
+    normalized
+  );
+};
 
 const sanitizeDetails = (value: unknown): unknown => {
   if (Array.isArray(value)) {
@@ -26,7 +56,7 @@ const sanitizeDetails = (value: unknown): unknown => {
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
       key,
-      sensitiveKeys.has(key) ? "[REDACTED]" : sanitizeDetails(entry)
+      isSensitiveKey(key) ? "[REDACTED]" : sanitizeDetails(entry)
     ])
   );
 };

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import SectionCard from "./SectionCard.vue";
 import type { DashboardTemplate, RecipientSummary, ReportScheduleSummary } from "../types";
 
@@ -82,14 +82,14 @@ const emit = defineEmits<{
         <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Recent schedule result</p>
         <p class="mt-2 text-sm text-slate-600">{{ lastScheduledReport ? "Schedule saved and subscriptions persisted." : "Create a schedule to enable weekly offline reporting." }}</p>
         <div v-if="lastScheduledReport" class="mt-4 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
-          {{ lastScheduledReport.name }} · {{ lastScheduledReport.cronExpression }}
+          {{ lastScheduledReport.name }} | {{ lastScheduledReport.cronExpression }}
         </div>
       </div>
       <div class="rounded-3xl border border-slate-200 bg-slate-50 p-5">
         <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Recent generation result</p>
         <p class="mt-2 text-sm text-slate-600">{{ lastGeneratedReport ? "Latest export was generated for the inbox and shared folder." : "Generate a report to verify exports and delivery." }}</p>
         <div v-if="lastGeneratedReport" class="mt-4 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
-          Export {{ lastGeneratedReport.exportId }} · {{ lastGeneratedReport.sharedFilePath ? "Shared delivery passed" : "Shared delivery pending or failed" }}
+          Export {{ lastGeneratedReport.exportId }} | {{ lastGeneratedReport.sharedFilePath ? "Shared delivery passed" : "Shared delivery pending or failed" }}
         </div>
       </div>
     </div>
@@ -100,7 +100,7 @@ const emit = defineEmits<{
         <div v-for="schedule in schedules" :key="schedule.id" class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
           <p class="text-sm font-semibold">{{ schedule.name }}</p>
           <p class="mt-1 text-xs text-slate-500">
-            {{ schedule.cronExpression }} · {{ schedule.exportFormat.toUpperCase() }} · Subscribers: {{ schedule.subscriberUserIds.length }} · Last run: {{ schedule.lastRunAt ?? "Never" }}
+            {{ schedule.cronExpression }} | {{ schedule.exportFormat.toUpperCase() }} | Subscribers: {{ schedule.subscriberUserIds.length }} | Last run: {{ schedule.lastRunAt ?? "Never" }}
           </p>
         </div>
       </div>
@@ -112,7 +112,7 @@ const emit = defineEmits<{
         <div v-for="item in inbox" :key="item.id as number" class="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <p class="text-sm font-semibold">{{ item.title }}</p>
-            <p class="mt-1 text-xs text-slate-500">{{ item.fileName }} · {{ item.status }}</p>
+            <p class="mt-1 text-xs text-slate-500">{{ item.fileName }} | {{ item.status }}</p>
           </div>
           <button :disabled="downloadingInboxId === (item.id as number)" class="rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60" @click="emit('download', item.id as number)">
             {{ downloadingInboxId === (item.id as number) ? "Downloading..." : "Download" }}

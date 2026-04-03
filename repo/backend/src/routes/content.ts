@@ -22,6 +22,27 @@ const searchSchema = z.object({
 });
 
 const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+const isValidIsoDate = (value: string) => {
+  const [yearPart, monthPart, dayPart] = value.split("-");
+  const year = Number(yearPart);
+  const month = Number(monthPart);
+  const day = Number(dayPart);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return false;
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return false;
+  }
+
+  const utcDate = new Date(Date.UTC(year, month - 1, day));
+  return (
+    utcDate.getUTCFullYear() === year &&
+    utcDate.getUTCMonth() === month - 1 &&
+    utcDate.getUTCDate() === day
+  );
+};
+
 const analyticsQuerySchema = z.object({
   startDate: isoDateSchema.optional(),
   endDate: isoDateSchema.optional(),
@@ -30,6 +51,22 @@ const analyticsQuerySchema = z.object({
     .union([z.literal("true"), z.literal("false"), z.undefined()])
     .transform((value) => value === "true")
 }).superRefine((value, ctx) => {
+  if (value.startDate && !isValidIsoDate(value.startDate)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Start date must be a valid calendar date",
+      path: ["startDate"]
+    });
+  }
+
+  if (value.endDate && !isValidIsoDate(value.endDate)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "End date must be a valid calendar date",
+      path: ["endDate"]
+    });
+  }
+
   if (value.startDate && value.endDate && value.endDate < value.startDate) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

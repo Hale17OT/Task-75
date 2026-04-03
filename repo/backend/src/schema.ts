@@ -153,9 +153,21 @@ CREATE TABLE IF NOT EXISTS biometric_audit_log (
   details_json JSON NOT NULL,
   actor_user_id BIGINT NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_bio_member FOREIGN KEY (member_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_bio_member FOREIGN KEY (member_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_bio_face_record FOREIGN KEY (face_record_id) REFERENCES face_records(id) ON DELETE SET NULL,
-  CONSTRAINT fk_bio_actor FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE CASCADE
+  CONSTRAINT fk_bio_actor FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS liveness_challenges (
+  challenge_id VARCHAR(255) PRIMARY KEY,
+  member_user_id BIGINT NOT NULL,
+  actor_user_id BIGINT NOT NULL,
+  issued_at DATETIME NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_liveness_member FOREIGN KEY (member_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_liveness_actor FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  KEY idx_liveness_expires (expires_at)
 );
 
 CREATE TABLE IF NOT EXISTS content_posts (
@@ -324,4 +336,59 @@ export const triggerStatements = [
    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'biometric_audit_log is immutable'`
 ];
 
-export const migrationStatements: string[] = [];
+export const migrationStatements: string[] = [
+  `
+SET @fk_bio_member_rule = (
+  SELECT DELETE_RULE
+  FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+  WHERE CONSTRAINT_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'biometric_audit_log'
+    AND CONSTRAINT_NAME = 'fk_bio_member'
+  LIMIT 1
+);
+SET @needs_fk_bio_member_restrict = IF(@fk_bio_member_rule IS NULL OR @fk_bio_member_rule <> 'RESTRICT', 1, 0);
+SET @drop_fk_bio_member = IF(
+  @needs_fk_bio_member_restrict = 1,
+  'ALTER TABLE biometric_audit_log DROP FOREIGN KEY fk_bio_member',
+  'SELECT 1'
+);
+PREPARE stmt_drop_fk_bio_member FROM @drop_fk_bio_member;
+EXECUTE stmt_drop_fk_bio_member;
+DEALLOCATE PREPARE stmt_drop_fk_bio_member;
+SET @add_fk_bio_member = IF(
+  @needs_fk_bio_member_restrict = 1,
+  'ALTER TABLE biometric_audit_log ADD CONSTRAINT fk_bio_member FOREIGN KEY (member_user_id) REFERENCES users(id) ON DELETE RESTRICT',
+  'SELECT 1'
+);
+PREPARE stmt_add_fk_bio_member FROM @add_fk_bio_member;
+EXECUTE stmt_add_fk_bio_member;
+DEALLOCATE PREPARE stmt_add_fk_bio_member;
+`,
+  `
+SET @fk_bio_actor_rule = (
+  SELECT DELETE_RULE
+  FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+  WHERE CONSTRAINT_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'biometric_audit_log'
+    AND CONSTRAINT_NAME = 'fk_bio_actor'
+  LIMIT 1
+);
+SET @needs_fk_bio_actor_restrict = IF(@fk_bio_actor_rule IS NULL OR @fk_bio_actor_rule <> 'RESTRICT', 1, 0);
+SET @drop_fk_bio_actor = IF(
+  @needs_fk_bio_actor_restrict = 1,
+  'ALTER TABLE biometric_audit_log DROP FOREIGN KEY fk_bio_actor',
+  'SELECT 1'
+);
+PREPARE stmt_drop_fk_bio_actor FROM @drop_fk_bio_actor;
+EXECUTE stmt_drop_fk_bio_actor;
+DEALLOCATE PREPARE stmt_drop_fk_bio_actor;
+SET @add_fk_bio_actor = IF(
+  @needs_fk_bio_actor_restrict = 1,
+  'ALTER TABLE biometric_audit_log ADD CONSTRAINT fk_bio_actor FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE RESTRICT',
+  'SELECT 1'
+);
+PREPARE stmt_add_fk_bio_actor FROM @add_fk_bio_actor;
+EXECUTE stmt_add_fk_bio_actor;
+DEALLOCATE PREPARE stmt_add_fk_bio_actor;
+`
+];

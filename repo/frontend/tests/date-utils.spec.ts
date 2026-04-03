@@ -4,6 +4,7 @@ import { formatIsoToMmDdYyyy, parseMmDdYyyy } from "../src/utils/date";
 describe("date utils", () => {
   it("parses MM/DD/YYYY values into API-friendly ISO date fragments", () => {
     expect(parseMmDdYyyy("03/28/2026")).toBe("2026-03-28");
+    expect(parseMmDdYyyy("02/31/2026")).toBe("");
     expect(parseMmDdYyyy("2026-03-28")).toBe("");
     expect(parseMmDdYyyy("")).toBe("");
   });

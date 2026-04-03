@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import CameraCapturePanel from "./CameraCapturePanel.vue";
 import FaceImageAnnotator from "./FaceImageAnnotator.vue";
 import SectionCard from "./SectionCard.vue";
@@ -151,8 +151,8 @@ const emit = defineEmits<{
         <div v-for="item in history" :key="`${item.faceRecordId}-${item.versionNumber}`" class="rounded-2xl border border-slate-200 bg-white p-4">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p class="text-sm font-semibold">Record {{ item.faceRecordId }} · Version {{ item.versionNumber ?? "n/a" }}</p>
-              <p class="mt-1 text-xs text-slate-500">Status: {{ item.status }} · Blur: {{ item.blurScore ?? "n/a" }} · Liveness: {{ item.livenessScore ?? "n/a" }}</p>
+              <p class="text-sm font-semibold">Record {{ item.faceRecordId }} | Version {{ item.versionNumber ?? "n/a" }}</p>
+              <p class="mt-1 text-xs text-slate-500">Status: {{ item.status }} | Blur: {{ item.blurScore ?? "n/a" }} | Liveness: {{ item.livenessScore ?? "n/a" }}</p>
             </div>
             <button
               v-if="item.status !== 'deactivated'"
@@ -171,7 +171,7 @@ const emit = defineEmits<{
       <p class="text-sm font-semibold text-ink">Biometric audit trail</p>
       <div class="mt-4 space-y-3">
         <div v-for="entry in auditTrail" :key="`${entry.createdAt}-${entry.eventType}`" class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <p class="text-sm font-semibold">{{ entry.eventType }} · {{ entry.actorName }}</p>
+          <p class="text-sm font-semibold">{{ entry.eventType }} | {{ entry.actorName }}</p>
           <p class="mt-1 text-xs text-slate-500">{{ entry.createdAt }}</p>
         </div>
         <p v-if="auditTrail.length === 0" class="text-sm text-slate-500">No biometric audit events exist for this member yet.</p>

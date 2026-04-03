@@ -72,6 +72,14 @@ const createFaceDataUrl = async (options?: { noseShift?: number; blur?: boolean 
   };
 };
 
+const challengeRow = (issuedAtMs = 1_000_000, expiresAtMs = 1_030_000) => ({
+  challenge_id: "challenge-1",
+  member_user_id: 7,
+  actor_user_id: 1,
+  issued_at: new Date(issuedAtMs),
+  expires_at: new Date(expiresAtMs)
+});
+
 describe("face service", () => {
   const dataDir = join(process.cwd(), "temp-face-service");
   const actor: AuthenticatedUser = {
@@ -136,12 +144,32 @@ describe("face service", () => {
     } satisfies Partial<AppError>);
   });
 
+  it("persists timed liveness challenges in the database", async () => {
+    const { database, execute } = createMockDatabase();
+    const service = createFaceService(database, {
+      ...baseConfig,
+      DATA_DIR: dataDir
+    }, cryptoService as never);
+
+    const challenge = await service.startLivenessChallenge(7, actor);
+
+    expect(challenge.challengeId).toBeTruthy();
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining("DELETE FROM liveness_challenges")
+    );
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO liveness_challenges"),
+      [challenge.challengeId, 7, actor.id, expect.any(Date), expect.any(Date)]
+    );
+  });
+
   it("creates a versioned face enrollment with encrypted artifact metadata", async () => {
     const { database, query, execute } = createMockDatabase();
     const center = await createFaceDataUrl();
     const turn = await createFaceDataUrl({ noseShift: 0.32 });
     query
       .mockResolvedValueOnce([{ consent_status: "granted" }])
+      .mockResolvedValueOnce([challengeRow()])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ id: 12 }])
@@ -182,6 +210,7 @@ describe("face service", () => {
     const turn = await createFaceDataUrl({ noseShift: 0.32 });
     query
       .mockResolvedValueOnce([{ consent_status: "granted" }])
+      .mockResolvedValueOnce([challengeRow()])
       .mockResolvedValueOnce([
         {
           member_user_id: 88,
@@ -289,6 +318,7 @@ describe("face service", () => {
     const { database, query } = createMockDatabase();
     const smoothImage = (await createFaceDataUrl({ blur: true })).dataUrl;
     query.mockResolvedValueOnce([{ consent_status: "granted" }]);
+    query.mockResolvedValueOnce([challengeRow()]);
 
     const service = createFaceService(database, {
       ...baseConfig,
@@ -319,6 +349,7 @@ describe("face service", () => {
     const turn = await createFaceDataUrl();
     query
       .mockResolvedValueOnce([{ consent_status: "granted" }])
+      .mockResolvedValueOnce([challengeRow()])
       .mockResolvedValueOnce([]);
 
     const service = createFaceService(database, {
@@ -348,7 +379,9 @@ describe("face service", () => {
     const { database, query } = createMockDatabase();
     const center = await createFaceDataUrl();
     const turn = await createFaceDataUrl({ noseShift: 0.32 });
-    query.mockResolvedValueOnce([{ consent_status: "granted" }]);
+    query
+      .mockResolvedValueOnce([{ consent_status: "granted" }])
+      .mockResolvedValueOnce([challengeRow()]);
 
     const service = createFaceService(database, {
       ...baseConfig,

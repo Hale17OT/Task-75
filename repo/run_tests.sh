@@ -207,6 +207,13 @@ if docker compose exec -T mysql mysql -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "$
   exit 1
 fi
 
+echo "[tests] integrity regression: biometric audit rows survive referenced-user delete attempts"
+if docker compose exec -T mysql mysql -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE:-sentinelfit}" -e \
+  "DELETE FROM users WHERE id = 1;" >/dev/null 2>&1; then
+  echo "[tests] expected deleting users referenced by biometric_audit_log to fail, but it succeeded"
+  exit 1
+fi
+
 echo "[tests] schema consistency check: encrypted fields mapped to UI-safe helpers"
 docker run --rm \
   -v "$PWD:/workspace" \

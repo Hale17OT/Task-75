@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Database } from "../src/database.js";
+import { AppError } from "../src/errors.js";
 
 const { mkdirMock, readFileMock, readdirMock, rmMock, writeFileMock } = vi.hoisted(() => ({
   mkdirMock: vi.fn(async () => {}),
@@ -78,9 +79,11 @@ describe("ops service", () => {
     query.mockImplementation(async (sql: string) =>
       sql.includes("SELECT id FROM backup_runs") ? [{ id: 41 }] : []
     );
-    readdirMock.mockImplementation(
-      async () => Array.from({ length: 31 }, (_, index) => `backup-${index + 1}.json`) as never[]
-    );
+    const now = Date.UTC(2026, 3, 3, 12, 0, 0);
+    readdirMock.mockImplementation(async () => {
+      const dailyFiles = Array.from({ length: 31 }, (_, index) => `backup-${now - index * 86_400_000}.json`);
+      return [...dailyFiles, `backup-${now - 31 * 86_400_000}.json`] as never[];
+    });
 
     const service = createOpsService(
       database,
@@ -104,7 +107,7 @@ describe("ops service", () => {
     expect(backup.id).toBe(41);
     expect(backup.keyId).toBe("key-1");
     expect(writeFileMock).toHaveBeenCalled();
-    expect(rmMock).toHaveBeenCalled();
+    expect(rmMock).toHaveBeenCalledTimes(2);
     expect(execute).toHaveBeenCalledWith(
       expect.stringContaining("INSERT INTO backup_runs"),
       ["key-1", expect.stringContaining("backup-"), expect.any(String)]
@@ -149,6 +152,30 @@ describe("ops service", () => {
       expect.stringContaining("INSERT INTO recovery_dry_runs"),
       [8, baseConfig.MYSQL_STANDBY_HOST, "Backup checksum mismatch"]
     );
+  });
+
+  it("returns explicit not-found error for unknown backup run ids", async () => {
+    const { database, query } = createMockDatabase();
+    query.mockResolvedValueOnce([]);
+
+    const service = createOpsService(
+      database,
+      baseConfig,
+      {
+        encrypt: vi.fn(),
+        decrypt: vi.fn(),
+        encryptBytes: vi.fn(),
+        decryptBytes: vi.fn(),
+        hashForComparison: vi.fn(),
+        maskPhone: vi.fn()
+      },
+      loggingService as never
+    );
+
+    await expect(service.dryRunRestore(999999)).rejects.toMatchObject({
+      statusCode: 404,
+      code: "backup_not_found"
+    } satisfies Partial<AppError>);
   });
 
   it("maps admin console metrics and recent events", async () => {

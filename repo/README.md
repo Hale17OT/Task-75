@@ -107,7 +107,7 @@ docker compose up --build
 ```
 
 4. Wait until services are healthy, then open [http://localhost:5173](http://localhost:5173).
-5. If `BACKEND_DEMO_SEED_USERS=false` (default), complete the one-time “First administrator setup”.
+5. If `BACKEND_DEMO_SEED_USERS=false` (default), complete the one-time "First administrator setup".
 6. To stop:
 
 ```bash
