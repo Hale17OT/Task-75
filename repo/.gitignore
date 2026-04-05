@@ -14,3 +14,5 @@ backend/data/uploads/*
 !backend/data/uploads/.gitkeep
 shared-reports/*
 !shared-reports/.gitkeep
+.tmp/
+temp/
