@@ -119,7 +119,7 @@ const { adminState, loadAdmin, handleCreateBackup, handleDryRunRestore, resetAdm
 const isCoachOrAdmin = computed(
   () => auth.currentUser?.roles.includes("Coach") || auth.currentUser?.roles.includes("Administrator")
 );
-const isMember = computed(() => auth.currentUser?.roles.includes("Member"));
+const isMember = computed(() => auth.currentUser?.hasMemberProfile === true);
 const isAdmin = computed(() => auth.currentUser?.roles.includes("Administrator"));
 const canUseInbox = computed(() => Boolean(auth.currentUser));
 const faceMembers = computed(() =>
@@ -180,7 +180,7 @@ const refreshView = async () => {
   if (!auth.canAccessView(auth.activeView as never)) return;
 
   try {
-    if (auth.activeView === "overview" && auth.currentUser.roles.includes("Member")) {
+    if (auth.activeView === "overview" && auth.currentUser.hasMemberProfile) {
       await loadSelf();
     }
     if (auth.activeView === "members") {

@@ -88,12 +88,14 @@ describe("auth service", () => {
           active: 1
         }
       ])
-      .mockResolvedValueOnce([{ role_name: "Administrator" }]);
+      .mockResolvedValueOnce([{ role_name: "Administrator" }])
+      .mockResolvedValueOnce([]);
 
     const service = createAuthService(database, baseConfig, cryptoService as never);
     const result = await service.bootstrapAdministrator("owner", "Facility Owner", "Owner12345!X", "Desk-A");
 
     expect(result.currentUser.roles).toEqual(["Administrator", "Coach", "Member"]);
+    expect(result.currentUser.hasMemberProfile).toBe(false);
     expect(execute).toHaveBeenCalledWith(
       expect.stringContaining("INSERT INTO bootstrap_guard"),
       []
@@ -144,12 +146,14 @@ describe("auth service", () => {
         }
       ])
       .mockResolvedValueOnce([{ role_name: "Administrator" }])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ user_id: 1 }]);
 
     const service = createAuthService(database, baseConfig, cryptoService as never);
     const result = await service.login("admin", "Admin12345!X", "127.0.0.1", "Front-Desk-01");
 
     expect(result.currentUser.roles).toEqual(["Administrator", "Coach", "Member"]);
+    expect(result.currentUser.hasMemberProfile).toBe(false);
     expect(result.session.sessionToken).toHaveLength(64);
     expect(result.session.sessionSecret).toBeTruthy();
     expect(execute).toHaveBeenCalledWith(
@@ -238,7 +242,8 @@ describe("auth service", () => {
           station_token: "Front-Desk-01"
         }
       ])
-      .mockResolvedValueOnce([{ role_name: "Administrator" }]);
+      .mockResolvedValueOnce([{ role_name: "Administrator" }])
+      .mockResolvedValueOnce([]);
 
     const service = createAuthService(database, baseConfig, cryptoService as never);
     const result = await service.reenterWithPin(
@@ -251,6 +256,7 @@ describe("auth service", () => {
     );
 
     expect(result.currentUser.username).toBe("admin");
+    expect(result.currentUser.hasMemberProfile).toBe(false);
     expect(result.hasPin).toBe(true);
     expect(execute).toHaveBeenCalledWith(
       expect.stringContaining("UPDATE sessions SET revoked_at"),
@@ -318,6 +324,7 @@ describe("auth service", () => {
       ])
       .mockResolvedValueOnce([{ user_id: 1 }])
       .mockResolvedValueOnce([{ role_name: "Administrator" }])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
         {
           id: 9,
@@ -335,6 +342,7 @@ describe("auth service", () => {
     await service.hardenStoredSessions();
 
     expect(session?.currentUser.username).toBe("admin");
+    expect(session?.currentUser.hasMemberProfile).toBe(false);
     expect(session?.session.sessionSecret).toBe("secret");
     expect(execute).toHaveBeenCalledWith(
       expect.stringContaining("INSERT INTO pin_credentials"),
@@ -365,7 +373,8 @@ describe("auth service", () => {
         }
       ])
       .mockResolvedValueOnce([{ user_id: 1 }])
-      .mockResolvedValueOnce([{ role_name: "Administrator" }]);
+      .mockResolvedValueOnce([{ role_name: "Administrator" }])
+      .mockResolvedValueOnce([]);
 
     const service = createAuthService(database, baseConfig, cryptoService as never);
 

@@ -298,4 +298,58 @@ describe("App", () => {
     expect(wrapper.text()).not.toContain("Admin console");
     expect(wrapper.text()).toContain("Operational snapshot");
   });
+
+  it("does not request self profile on overview for admin sessions without a member profile", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.includes("/api/auth/bootstrap/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              requiresBootstrap: false
+            }
+          })
+        });
+      }
+
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          data: {
+            session: null
+          }
+        })
+      });
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    mount(App, {
+      global: {
+        plugins: [createPinia()]
+      }
+    });
+    await flushPromises();
+
+    const store = useAuthStore();
+    store.currentUser = {
+      id: 1,
+      username: "admin",
+      fullName: "System Administrator",
+      roles: ["Administrator", "Coach", "Member"],
+      hasMemberProfile: false
+    };
+    store.sessionSecret = "secret";
+    await flushPromises();
+
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("/api/self/profile"),
+      expect.anything()
+    );
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/api/self/profile"))).toBe(false);
+  });
 });

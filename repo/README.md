@@ -2,7 +2,7 @@
 
 SentinelFit is a fully on-prem operations platform for gyms and training studios. This implementation delivers the planned vertical slices across authentication, member enrollment, biometric governance, coaching content, analytics, dashboarding, scheduled reporting, observability, and backup/recovery using a Docker-first runtime.
 
-The implementation benchmark used for this repository is [temp/final_plan_of_action.md](/E:/Hale/Coding/Eaglepoint/Task-75/repo/temp/final_plan_of_action.md).
+The implementation benchmark used for this repository is captured by the in-repo source, tests, and reviewer notes under [`backend`](./backend), [`frontend`](./frontend), and [`tests`](./tests).
 
 ## Stack
 
@@ -28,10 +28,10 @@ The implementation benchmark used for this repository is [temp/final_plan_of_act
 
 ## Repository layout
 
-- [frontend](/E:/Hale/Coding/Eaglepoint/Task-75/repo/frontend): Vue application
-- [backend](/E:/Hale/Coding/Eaglepoint/Task-75/repo/backend): Express API and background services
-- [tests/e2e](/E:/Hale/Coding/Eaglepoint/Task-75/repo/tests/e2e): Playwright end-to-end tests
-- [temp](/E:/Hale/Coding/Eaglepoint/Task-75/repo/temp): planning notes and implementation benchmark
+- [frontend](./frontend): Vue application
+- [backend](./backend): Express API and background services
+- [tests/e2e](./tests/e2e): Playwright end-to-end tests
+- [docs](./docs): reviewer-facing API and design notes
 
 ## Prerequisites
 
@@ -245,10 +245,11 @@ Not covered by this path:
 - Preview-only dedup checks do not persist orphaned biometric artifacts to disk.
 - PIN re-entry is only valid when an active warm session already exists and the browser presents the server-issued workstation binding cookie; the station token remains attribution metadata, not the security proof.
 - PIN re-entry shares the sign-in rate limit path and lockout policy to reduce brute-force exposure.
+- Auth throttling keeps an IP-level abuse cap, but also keys per-station traffic so independent kiosks on the same LAN do not rate-limit each other by default.
 - Request-signing policy:
   - Signed (`x-sf-timestamp` + `x-sf-nonce` + `x-sf-signature`) is required for all authenticated business routes under `/api/self`, `/api/members`, `/api/faces`, `/api/content`, `/api/dashboards`, `/api/reports`, and `/api/admin`.
   - Unsigned exceptions are limited to pre-auth/session-establishment flows: `/api/auth/bootstrap/status`, `/api/auth/bootstrap/admin`, `/api/auth/login`, `/api/auth/pin/reenter`, and `/api/auth/session`.
-  - Compensating controls for unsigned exceptions include IP allowlist enforcement, auth-route per-IP throttling, credential lockout policy, and workstation-binding cookie validation on `/api/auth/session`.
+  - Compensating controls for unsigned exceptions include IP allowlist enforcement, station-aware auth throttling with an IP abuse cap, credential lockout policy, and workstation-binding cookie validation on `/api/auth/session`.
   - Replay protection for signed routes uses nonce single-use records stored in MySQL with TTL, so replay history survives process restarts and multi-instance routing.
 - Session-state restoration uses the server session endpoint and keeps the signing secret in memory only, while warm-lock resumes require PIN re-entry.
 - Coach access scope is driven by explicit `coach_location_assignments` records rather than inferred from historical member/content data.

@@ -50,6 +50,11 @@ export const useMembers = (auth: ReturnType<typeof useAuthStore>, setFeedback: F
   };
 
   const loadSelf = async () => {
+    if (!auth.currentUser?.hasMemberProfile) {
+      memberSelf.value = null;
+      return;
+    }
+
     try {
       memberSelf.value = (await auth.api().getSelfProfile()).member;
     } catch {

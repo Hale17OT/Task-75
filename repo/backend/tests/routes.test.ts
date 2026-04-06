@@ -336,6 +336,41 @@ describe("route and middleware behavior", () => {
     expect(authService.login).toHaveBeenCalledWith("admin", "Admin12345!X", expect.any(String), "Desk-A");
   });
 
+  it("rate-limits sign-in per station while allowing another station on the same IP to continue", async () => {
+    const { app } = createServices({
+      config: {
+        ...baseConfig,
+        LOGIN_RATE_LIMIT_PER_MINUTE: 2
+      }
+    });
+
+    await request(app)
+      .post("/api/auth/login")
+      .set("x-station-token", "Desk-A")
+      .send({ username: "admin", password: "Admin12345!X" })
+      .expect(200);
+
+    await request(app)
+      .post("/api/auth/login")
+      .set("x-station-token", "Desk-A")
+      .send({ username: "admin", password: "Admin12345!X" })
+      .expect(200);
+
+    await request(app)
+      .post("/api/auth/login")
+      .set("x-station-token", "Desk-B")
+      .send({ username: "admin", password: "Admin12345!X" })
+      .expect(200);
+
+    const limited = await request(app)
+      .post("/api/auth/login")
+      .set("x-station-token", "Desk-A")
+      .send({ username: "admin", password: "Admin12345!X" });
+
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("rate_limited");
+  });
+
   it("rejects PIN re-entry when the warm workstation session cookie is missing", async () => {
     const { app } = createServices();
 

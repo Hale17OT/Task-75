@@ -97,11 +97,24 @@ export const createAuthService = (
     return expandRoles(rows.map((row) => row.role_name as Role));
   };
 
+  const hasMemberProfile = async (userId: number) => {
+    const rows = await database.query<RowDataPacket[]>(
+      `SELECT 1
+       FROM member_profiles
+       WHERE user_id = ?
+       LIMIT 1`,
+      [userId]
+    );
+
+    return rows.length > 0;
+  };
+
   const toAuthenticatedUser = async (user: UserRow): Promise<AuthenticatedUser> => ({
     id: user.id,
     username: user.username,
     fullName: user.full_name,
-    roles: await loadUserRoles(user.id)
+    roles: await loadUserRoles(user.id),
+    hasMemberProfile: await hasMemberProfile(user.id)
   });
 
   const assertNotLocked = async (username: string) => {
