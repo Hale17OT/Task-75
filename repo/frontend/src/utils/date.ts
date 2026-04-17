@@ -41,5 +41,8 @@ export const formatIsoToMmDdYyyy = (value: string | null | undefined) => {
     return "";
   }
 
-  return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}/${date.getFullYear()}`;
+  // UTC getters keep the calendar date stable regardless of the operator's
+  // workstation timezone; otherwise an ISO date like "2026-04-15T00:00:00Z"
+  // would render as "04/14/2026" on workstations west of UTC.
+  return `${String(date.getUTCMonth() + 1).padStart(2, "0")}/${String(date.getUTCDate()).padStart(2, "0")}/${date.getUTCFullYear()}`;
 };

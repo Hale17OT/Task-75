@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { isAbsolute as isAbsolutePath, join, relative as relativePath, resolve as resolvePath } from "node:path";
 import ExcelJS from "exceljs";
 import PDFDocument from "pdfkit";
 import cron, { type ScheduledTask } from "node-cron";
@@ -581,11 +581,49 @@ export const createReportService = (
         throw new AppError(404, "report_inbox_item_not_found", "Report inbox item was not found");
       }
 
+      const rawPath = String(item.file_path);
+      const approvedRoots = [
+        resolvePath(config.DATA_DIR, "reports"),
+        resolvePath(config.REPORTS_SHARED_PATH)
+      ];
+
+      let canonicalPath: string;
+      try {
+        canonicalPath = await realpath(rawPath);
+      } catch {
+        throw new AppError(404, "report_file_missing", "Report file is no longer available on disk");
+      }
+      const canonicalRoots = await Promise.all(
+        approvedRoots.map(async (root) => {
+          try {
+            return await realpath(root);
+          } catch {
+            return resolvePath(root);
+          }
+        })
+      );
+      const isWithinApprovedRoot = canonicalRoots.some((root) => {
+        const rel = relativePath(root, canonicalPath);
+        return rel === "" || (!rel.startsWith("..") && !isAbsolutePath(rel));
+      });
+      if (!isWithinApprovedRoot) {
+        await loggingService.alert(
+          "report_path_violation",
+          "high",
+          `Refused to serve report file outside approved storage roots: ${rawPath}`
+        );
+        throw new AppError(
+          403,
+          "report_path_forbidden",
+          "Report file is outside the approved storage roots"
+        );
+      }
+
       await database.execute(`UPDATE report_inbox_items SET is_read = 1 WHERE id = ?`, [inboxItemId]);
 
       return {
-        filePath: String(item.file_path),
-        fileName: String(item.file_path).split(/[\\/]/).pop() ?? `report-${item.id}.${item.export_format}`
+        filePath: canonicalPath,
+        fileName: canonicalPath.split(/[\\/]/).pop() ?? `report-${item.id}.${item.export_format}`
       };
     },
 

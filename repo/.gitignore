@@ -16,3 +16,4 @@ shared-reports/*
 !shared-reports/.gitkeep
 .tmp/
 temp/
+shared-reports/*

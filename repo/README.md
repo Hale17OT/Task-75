@@ -1,8 +1,10 @@
 # SentinelFit Operations Platform
 
+**Project type: fullstack** (Vue 3 frontend + Express/TypeScript backend + MySQL, orchestrated by Docker Compose).
+
 SentinelFit is a fully on-prem operations platform for gyms and training studios. This implementation delivers the planned vertical slices across authentication, member enrollment, biometric governance, coaching content, analytics, dashboarding, scheduled reporting, observability, and backup/recovery using a Docker-first runtime.
 
-The implementation benchmark used for this repository is [temp/final_plan_of_action.md](/E:/Hale/Coding/Eaglepoint/Task-75/repo/temp/final_plan_of_action.md).
+The implementation benchmark used for this repository is [temp/final_plan_of_action.md](./temp/final_plan_of_action.md).
 
 ## Stack
 
@@ -10,6 +12,32 @@ The implementation benchmark used for this repository is [temp/final_plan_of_act
 - Backend: Express, TypeScript, Node.js, node-cron
 - Database: MySQL 8
 - Runtime: Docker Compose, fully offline/on-prem, no external API dependencies
+
+## Architecture
+
+```
++-----------------+        +----------------------+        +--------------------+
+|  Vue 3 frontend | <----> |  Express backend     | <----> |  MySQL 8 (primary) |
+|  (port 5173)    |   CORS |  (port 3000)         |  mysql |  (port 3306)       |
++-----------------+        |  - Signed requests   |        +--------------------+
+                           |  - RBAC middleware   |
+                           |  - Face pipeline     |        +--------------------+
+                           |  - Scheduler         | -----> |  MySQL 8 (standby) |
+                           |  - Backup / restore  |        |  (port 3307)       |
+                           +----------+-----------+        +--------------------+
+                                      |
+                                      v
+                           +----------------------+
+                           |  Shared reports dir  |
+                           |  (host-mounted)      |
+                           +----------------------+
+```
+
+- **Frontend (Vue 3 + Pinia + Tailwind + Chart.js + TensorFlow.js)** renders operator workstations, handles camera capture and client-side quality guidance, and signs every request against an in-memory session secret issued by the backend.
+- **Backend (Express + TypeScript)** terminates HTTP, enforces per-IP rate limits, IP allowlisting, HMAC request signing with durable nonce replay protection, session/warm-lock handling, RBAC, and all business logic. All cryptographic primitives resolve through a local envelope-encrypted key vault.
+- **MySQL primary** stores users, sessions, members, face artifacts metadata, biometric audit logs (immutable via triggers), content posts, dashboards, report schedules, reports, keys, and logs.
+- **MySQL standby** is the target for nightly encrypted backups and dry-run restore verification.
+- **Shared reports directory** is bind-mounted from the host so CSV/Excel/PDF report exports are directly accessible outside the containers.
 
 ## Implemented modules
 
@@ -28,17 +56,17 @@ The implementation benchmark used for this repository is [temp/final_plan_of_act
 
 ## Repository layout
 
-- [frontend](/E:/Hale/Coding/Eaglepoint/Task-75/repo/frontend): Vue application
-- [backend](/E:/Hale/Coding/Eaglepoint/Task-75/repo/backend): Express API and background services
-- [tests/e2e](/E:/Hale/Coding/Eaglepoint/Task-75/repo/tests/e2e): Playwright end-to-end tests
-- [temp](/E:/Hale/Coding/Eaglepoint/Task-75/repo/temp): planning notes and implementation benchmark
+- [frontend](./frontend): Vue application
+- [backend](./backend): Express API and background services
+- [tests/e2e](./tests/e2e): Playwright end-to-end tests
+- [temp](./temp): planning notes and implementation benchmark
 
 ## Prerequisites
 
-- Docker Desktop with Compose
-- Node.js 20+
-- npm 10+
-- Bash-compatible shell for `run_tests.sh`
+- Docker Desktop (or Docker Engine + Compose plugin)
+- Bash-compatible shell to invoke `./run_tests.sh`
+
+No host-level Node.js, npm, database server, or manual package installation is required. All runtime dependencies, tests, and typechecks execute inside Docker containers.
 
 ## Configuration
 
@@ -74,13 +102,53 @@ The default configuration allows both `localhost` and `127.0.0.1` frontend origi
 The shipped allowlist defaults cover local and private-LAN ranges so the offline deployment path does not start in an allow-all state.
 The Docker stack now binds report delivery to `REPORTS_SHARED_HOST_PATH` on the host so exported files are directly visible outside containers.
 
+### Compose-facing → backend-runtime variable mapping
+
+The compose stack uses `BACKEND_*` prefixes on the host so that operators can override every backend setting from `.env` without colliding with frontend or MySQL variables. Inside the backend container those same values are exposed under the shorter names that `backend/src/config.ts` reads. The mapping is fixed in `docker-compose.yml`:
+
+| Compose / `.env` key (host)      | Backend container env (runtime, used by `backend/src/config.ts`) |
+| ---                              | ---                                                              |
+| `BACKEND_PORT`                   | `PORT`                                                           |
+| `BACKEND_NODE_ENV`               | `NODE_ENV`                                                       |
+| `BACKEND_ALLOWED_ORIGINS`        | `ALLOWED_ORIGINS`                                                |
+| `BACKEND_DATA_DIR`               | `DATA_DIR`                                                       |
+| `BACKEND_REPORTS_SHARED_PATH`    | `REPORTS_SHARED_PATH`                                            |
+| `BACKEND_IP_ALLOWLIST`           | `IP_ALLOWLIST`                                                   |
+| `BACKEND_API_RATE_LIMIT_PER_MINUTE` | `API_RATE_LIMIT_PER_MINUTE`                                  |
+| `BACKEND_DEMO_SEED_USERS`        | `DEMO_SEED_USERS`                                                |
+| `BACKEND_KEY_VAULT_MASTER_KEY`   | `KEY_VAULT_MASTER_KEY`                                           |
+| `MYSQL_HOST`                     | `MYSQL_HOST` (no rename)                                         |
+| `MYSQL_PORT`                     | `MYSQL_PORT`                                                     |
+| `MYSQL_DATABASE`                 | `MYSQL_DATABASE`                                                 |
+| `MYSQL_USER`                     | `MYSQL_USER`                                                     |
+| `MYSQL_PASSWORD`                 | `MYSQL_PASSWORD`                                                 |
+| `MYSQL_STANDBY_HOST`             | `MYSQL_STANDBY_HOST`                                             |
+| `MYSQL_STANDBY_PORT`             | `MYSQL_STANDBY_PORT`                                             |
+| `REPORTS_SHARED_HOST_PATH`       | (host bind-mount source for `BACKEND_REPORTS_SHARED_PATH`; not seen inside the container) |
+| `MYSQL_PORT_BIND`                | (host port bind for primary MySQL; not seen inside the container) |
+| `MYSQL_STANDBY_PORT_BIND`        | (host port bind for standby MySQL; not seen inside the container) |
+| `MYSQL_ROOT_PASSWORD`            | consumed by the `mysql` and `mysql-standby` containers, not the backend |
+| `FRONTEND_PORT`                  | consumed by the `frontend` container, not the backend            |
+| `VITE_API_BASE_URL`              | consumed by the `frontend` container at build time, not the backend |
+
+So when the operational notes (or `backend/src/config.ts`) refer to `KEY_VAULT_MASTER_KEY`, that is the **same value** you set as `BACKEND_KEY_VAULT_MASTER_KEY` in `.env` or `docker-compose.yml`; the backend service block in `docker-compose.yml` rewrites the name on the way into the container. The same rule applies to every `BACKEND_*` row above.
+
 ## Run with Docker
 
 The canonical startup command is:
 
 ```bash
+docker-compose up
+```
+
+Equivalent invocations supported by modern Docker Desktop (Compose plugin):
+
+```bash
+docker-compose up --build
 docker compose up --build
 ```
+
+The `docker-compose up` form (with a hyphen) and the newer `docker compose up` form are both supported. Use whichever your Docker Desktop / Docker Engine + Compose plugin recognizes; on a fresh install of Docker Desktop the hyphenated `docker-compose up` is shimmed to the same Compose runtime as `docker compose up`.
 
 Services:
 
@@ -100,7 +168,13 @@ Shared report delivery:
 
 1. Install Docker Desktop (or Docker Engine + Compose plugin) and start Docker.
 2. Open this repository directory.
-3. Run:
+3. Run either of the supported forms:
+
+```bash
+docker-compose up
+```
+
+or, equivalently:
 
 ```bash
 docker compose up --build
@@ -146,13 +220,21 @@ Notes:
 
 ## Demo seed accounts
 
-Demo users are only created when `BACKEND_DEMO_SEED_USERS=true`.
+SentinelFit ships with the following demo accounts so verifiers can sign in immediately after `docker compose up --build`:
 
-- `admin` / `Admin12345!X`
-- `coach` / `Coach12345!X`
-- `member` / `Member12345!X`
+| Role | Username | Password |
+| --- | --- | --- |
+| Administrator | `admin` | `Admin12345!X` |
+| Coach | `coach` | `Coach12345!X` |
+| Member | `member` | `Member12345!X` |
 
-The default non-demo runtime leaves seed users disabled so a clean deployment does not start with publicly documented credentials.
+These accounts cover all three roles (Administrator, Coach, Member) and are seeded whenever `BACKEND_DEMO_SEED_USERS=true`. `./run_tests.sh` exports this value automatically. To use the same credentials against a plain `docker compose up --build`, start the stack with:
+
+```bash
+BACKEND_DEMO_SEED_USERS=true docker compose up --build
+```
+
+If `BACKEND_DEMO_SEED_USERS=false`, no demo credentials are created — the UI instead presents the one-time **First administrator setup** flow documented below. This is a security hardening option for production deployments; reviewers should leave `BACKEND_DEMO_SEED_USERS=true` to exercise the credentials above.
 
 ## First-boot administrator setup
 
@@ -165,69 +247,81 @@ When `BACKEND_DEMO_SEED_USERS=false`, SentinelFit presents a one-time administra
 
 ## Testing
 
-The canonical unified test entrypoint is:
+The canonical and only supported test entrypoint is:
 
 ```bash
 ./run_tests.sh
 ```
 
-`run_tests.sh` performs:
+`run_tests.sh` performs every step inside Docker containers:
 
-- root dependency install
-- backend dependency install and coverage-checked tests
-- frontend dependency install and coverage-checked tests
-- Playwright browser install
-- `docker compose up --build -d`
-- readiness wait for frontend and backend
-- Playwright end-to-end tests
-- clean-install Docker restart with demo seeds disabled
-- first-boot Playwright bootstrap verification
+- builds `backend` and `frontend` images
+- runs backend unit/integration tests: `docker compose run --rm --no-deps backend npm test`
+- runs frontend unit tests: `docker compose run --rm --no-deps frontend npm test`
+- runs backend and frontend typechecks in the same container pattern
+- starts the full stack with `docker compose up --build -d`
+- waits for `/health/ready` and the frontend to become available
+- runs Playwright end-to-end tests inside a `node:20-bookworm` container against the live Docker stack
+- runs signed HMAC regression checks against the live backend (coach-to-admin boundary and biometric audit immutability)
+- restarts the stack with `BACKEND_DEMO_SEED_USERS=false` and runs the first-boot bootstrap Playwright scenario
 
-Local verification commands are still useful, but Dockerized behavior is authoritative.
-Before running them directly, install package-local dependencies once:
+### Verifying the API manually
 
-```bash
-cd backend && npm ci
-cd ../frontend && npm ci
-cd ..
-```
-
-Then run:
+Once the stack is up, probe the unsigned health endpoints with `curl` against the Docker backend:
 
 ```bash
-cd backend && npm test
-cd backend && npm run typecheck
-cd frontend && npm test
-cd frontend && npm run typecheck
-cd frontend && npm run build
-cd frontend && npm run preview
-npm run test:e2e
+curl -s http://localhost:3000/health/live
+curl -s http://localhost:3000/health/ready
 ```
 
-`npm run test:e2e` assumes frontend and backend services are already running and reachable on `127.0.0.1:5173` and `127.0.0.1:3000`. For a self-contained run, use `./run_tests.sh` (Docker canonical path).
-Local non-Docker checks validate source-level behavior and contracts, but deployment/runtime readiness is only guaranteed by the Docker-first path.
-
-### Frontend-only non-Docker review recipe
-
-Use this path when Docker is unavailable and you only need frontend implementation validation:
+Bootstrap status and password login are also unsigned:
 
 ```bash
-cd frontend
-npm ci
-npm run typecheck
-npm test
-npm run build
-npm run dev
+curl -s http://localhost:3000/api/auth/bootstrap/status
+
+curl -s -c cookies.txt -X POST \
+  -H 'content-type: application/json' \
+  -H 'x-station-token: Front-Desk-01' \
+  -d '{"username":"admin","password":"Admin12345!X"}' \
+  http://localhost:3000/api/auth/login | tee /tmp/login.json
 ```
 
-Coverage from this path:
-- Component/composable/store behavior and UI-level validation logic
-- Type safety and production frontend build output
+Everything under `/api/self`, `/api/members`, `/api/faces`, `/api/content`, `/api/dashboards`, `/api/reports`, and `/api/admin` requires a signed HMAC request. Use the script below (inside the backend container, where `node` is available) to call a signed endpoint from the command line:
 
-Not covered by this path:
-- Backend/MySQL runtime integration
-- Playwright E2E against live backend services
-- Docker deployment readiness (`docker compose up --build`, `./run_tests.sh`)
+```bash
+docker compose exec backend node <<'NODE'
+const crypto = require('node:crypto');
+
+const sessionSecret = '<<paste-data.sessionSecret-from-login-response>>';
+const sessionCookie = '<<paste-sf_session-cookie>>';
+const workstationCookie = '<<paste-sf_workstation-cookie>>';
+const path = '/api/admin/console';
+
+const timestamp = new Date().toISOString();
+const nonce = crypto.randomUUID();
+const bodyHash = crypto.createHash('sha256').update('').digest('hex');
+const payload = ['GET', path, timestamp, nonce, bodyHash].join('\n');
+const signature = crypto
+  .createHmac('sha256', Buffer.from(sessionSecret, 'base64'))
+  .update(payload)
+  .digest('hex');
+
+const response = await fetch(`http://127.0.0.1:3000${path}`, {
+  method: 'GET',
+  headers: {
+    cookie: `sf_session=${sessionCookie}; sf_workstation=${workstationCookie}`,
+    'x-station-token': 'Front-Desk-01',
+    'x-sf-timestamp': timestamp,
+    'x-sf-nonce': nonce,
+    'x-sf-signature': signature
+  }
+});
+
+console.log(response.status, await response.text());
+NODE
+```
+
+The UI at http://localhost:5173 performs this signing automatically, so browser verification remains the fastest happy-path check.
 
 ## Operational notes
 

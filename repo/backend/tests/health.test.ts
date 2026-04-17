@@ -9,8 +9,14 @@ describe("health routes", () => {
     const response = await request(app).get("/health/live");
 
     expect(response.status).toBe(200);
-    expect(response.body.data.status).toBe("ok");
-    expect(response.body.data.service).toBe("sentinelfit-backend");
+    expect(response.body).toEqual({
+      ok: true,
+      data: {
+        status: "ok",
+        environment: "test",
+        service: "sentinelfit-backend"
+      }
+    });
   });
 
   it("returns backend metadata from the root route", async () => {
@@ -19,8 +25,13 @@ describe("health routes", () => {
     const response = await request(app).get("/");
 
     expect(response.status).toBe(200);
-    expect(response.body.data.name).toBe("SentinelFit Operations Backend");
-    expect(response.body.data.slice).toBe("full-platform");
+    expect(response.body).toEqual({
+      ok: true,
+      data: {
+        name: "SentinelFit Operations Backend",
+        slice: "full-platform"
+      }
+    });
   });
 
   it("returns readiness success when database is healthy", async () => {
@@ -29,7 +40,17 @@ describe("health routes", () => {
     const response = await request(app).get("/health/ready");
 
     expect(response.status).toBe(200);
-    expect(response.body.data.services.database).toBe("up");
+    expect(response.body).toEqual({
+      ok: true,
+      data: {
+        status: "ok",
+        environment: "test",
+        services: {
+          api: "up",
+          database: "up"
+        }
+      }
+    });
   });
 
   it("returns degraded readiness when database is unavailable", async () => {
@@ -38,8 +59,17 @@ describe("health routes", () => {
     const response = await request(app).get("/health/ready");
 
     expect(response.status).toBe(503);
-    expect(response.body.data.status).toBe("degraded");
-    expect(response.body.data.services.database).toBe("down");
+    expect(response.body).toEqual({
+      ok: true,
+      data: {
+        status: "degraded",
+        environment: "test",
+        services: {
+          api: "up",
+          database: "down"
+        }
+      }
+    });
   });
 });
 

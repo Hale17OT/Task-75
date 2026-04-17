@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Database } from "../src/database.js";
 
-const { mkdirMock, writeFileMock } = vi.hoisted(() => ({
+const { mkdirMock, writeFileMock, realpathMock } = vi.hoisted(() => ({
   mkdirMock: vi.fn(async () => {}),
-  writeFileMock: vi.fn(async () => {})
+  writeFileMock: vi.fn(async () => {}),
+  realpathMock: vi.fn(async (p: string) => p)
 }));
 const { cronScheduleMock } = vi.hoisted(() => ({
   cronScheduleMock: vi.fn()
@@ -11,7 +12,8 @@ const { cronScheduleMock } = vi.hoisted(() => ({
 
 vi.mock("node:fs/promises", () => ({
   mkdir: mkdirMock,
-  writeFile: writeFileMock
+  writeFile: writeFileMock,
+  realpath: realpathMock
 }));
 vi.mock("node-cron", async () => {
   const actual = await vi.importActual<typeof import("node-cron")>("node-cron");
@@ -75,6 +77,8 @@ describe("report service", () => {
     mkdirMock.mockClear();
     writeFileMock.mockClear();
     cronScheduleMock.mockClear();
+    realpathMock.mockReset();
+    realpathMock.mockImplementation(async (p: string) => p);
     writeFileMock.mockImplementation(async (...args: unknown[]) => {
       const path = String(args[0]);
       if (path.includes("shared")) {
@@ -707,5 +711,221 @@ describe("report service", () => {
       expect.stringContaining("WHERE location_code = ?"),
       ["HQ"]
     );
+  });
+
+  describe("getInboxDownload — approved storage roots", () => {
+    const approvedConfig = {
+      ...baseConfig,
+      DATA_DIR: "/srv/sentinelfit/data",
+      REPORTS_SHARED_PATH: "/srv/sentinelfit/shared-reports"
+    };
+
+    it("returns the canonical file path when the report sits inside DATA_DIR/reports", async () => {
+      const { database, query, execute } = createMockDatabase();
+      const allowedPath = "/srv/sentinelfit/data/reports/weekly-snapshot-1700000000000.pdf";
+      query.mockResolvedValueOnce([
+        { id: 11, file_path: allowedPath, export_format: "pdf" }
+      ]);
+      const loggingService = {
+        log: vi.fn(async () => {}),
+        alert: vi.fn(async () => {}),
+        access: vi.fn(async () => {})
+      };
+      const service = createReportService(
+        database,
+        approvedConfig,
+        {
+          createPost: vi.fn(),
+          analytics: vi.fn(),
+          listPosts: vi.fn(),
+          recordView: vi.fn(),
+          recordSearch: vi.fn()
+        },
+        {
+          getLayout: vi.fn(),
+          saveLayout: vi.fn(),
+          createTemplate: vi.fn(),
+          listTemplates: vi.fn()
+        },
+        loggingService
+      );
+
+      const result = await service.getInboxDownload(1, 11);
+
+      expect(result.filePath).toBe(allowedPath);
+      expect(result.fileName).toBe("weekly-snapshot-1700000000000.pdf");
+      expect(execute).toHaveBeenCalledWith(
+        expect.stringContaining("UPDATE report_inbox_items SET is_read = 1"),
+        [11]
+      );
+      expect(loggingService.alert).not.toHaveBeenCalled();
+    });
+
+    it("returns the canonical file path when the report sits inside REPORTS_SHARED_PATH", async () => {
+      const { database, query } = createMockDatabase();
+      const allowedPath = "/srv/sentinelfit/shared-reports/sub/weekly-snapshot.csv";
+      query.mockResolvedValueOnce([
+        { id: 12, file_path: allowedPath, export_format: "csv" }
+      ]);
+      const loggingService = {
+        log: vi.fn(async () => {}),
+        alert: vi.fn(async () => {}),
+        access: vi.fn(async () => {})
+      };
+      const service = createReportService(
+        database,
+        approvedConfig,
+        {
+          createPost: vi.fn(),
+          analytics: vi.fn(),
+          listPosts: vi.fn(),
+          recordView: vi.fn(),
+          recordSearch: vi.fn()
+        },
+        {
+          getLayout: vi.fn(),
+          saveLayout: vi.fn(),
+          createTemplate: vi.fn(),
+          listTemplates: vi.fn()
+        },
+        loggingService
+      );
+
+      const result = await service.getInboxDownload(1, 12);
+      expect(result.filePath).toBe(allowedPath);
+      expect(result.fileName).toBe("weekly-snapshot.csv");
+      expect(loggingService.alert).not.toHaveBeenCalled();
+    });
+
+    it("rejects with 403 report_path_forbidden when the DB-stored path escapes the approved roots", async () => {
+      const { database, query, execute } = createMockDatabase();
+      const escapingPath = "/etc/passwd";
+      query.mockResolvedValueOnce([
+        { id: 13, file_path: escapingPath, export_format: "pdf" }
+      ]);
+      const loggingService = {
+        log: vi.fn(async () => {}),
+        alert: vi.fn(async () => {}),
+        access: vi.fn(async () => {})
+      };
+      const service = createReportService(
+        database,
+        approvedConfig,
+        {
+          createPost: vi.fn(),
+          analytics: vi.fn(),
+          listPosts: vi.fn(),
+          recordView: vi.fn(),
+          recordSearch: vi.fn()
+        },
+        {
+          getLayout: vi.fn(),
+          saveLayout: vi.fn(),
+          createTemplate: vi.fn(),
+          listTemplates: vi.fn()
+        },
+        loggingService
+      );
+
+      await expect(service.getInboxDownload(1, 13)).rejects.toMatchObject({
+        statusCode: 403,
+        code: "report_path_forbidden"
+      } satisfies Partial<AppError>);
+
+      expect(loggingService.alert).toHaveBeenCalledWith(
+        "report_path_violation",
+        "high",
+        expect.stringContaining(escapingPath)
+      );
+      // Read receipt update must NOT fire when the path is rejected.
+      expect(execute).not.toHaveBeenCalledWith(
+        expect.stringContaining("UPDATE report_inbox_items SET is_read = 1"),
+        expect.anything()
+      );
+    });
+
+    it("rejects with 403 report_path_forbidden when a symlink resolves outside the approved roots", async () => {
+      const { database, query } = createMockDatabase();
+      const symlinkPath = "/srv/sentinelfit/data/reports/leak.pdf";
+      const resolvedTarget = "/etc/shadow";
+      query.mockResolvedValueOnce([
+        { id: 14, file_path: symlinkPath, export_format: "pdf" }
+      ]);
+      realpathMock.mockImplementation(async (p: string) => {
+        if (p === symlinkPath) {
+          return resolvedTarget;
+        }
+        return p;
+      });
+      const loggingService = {
+        log: vi.fn(async () => {}),
+        alert: vi.fn(async () => {}),
+        access: vi.fn(async () => {})
+      };
+      const service = createReportService(
+        database,
+        approvedConfig,
+        {
+          createPost: vi.fn(),
+          analytics: vi.fn(),
+          listPosts: vi.fn(),
+          recordView: vi.fn(),
+          recordSearch: vi.fn()
+        },
+        {
+          getLayout: vi.fn(),
+          saveLayout: vi.fn(),
+          createTemplate: vi.fn(),
+          listTemplates: vi.fn()
+        },
+        loggingService
+      );
+
+      await expect(service.getInboxDownload(1, 14)).rejects.toMatchObject({
+        statusCode: 403,
+        code: "report_path_forbidden"
+      } satisfies Partial<AppError>);
+      expect(loggingService.alert).toHaveBeenCalledWith(
+        "report_path_violation",
+        "high",
+        expect.stringContaining(symlinkPath)
+      );
+    });
+
+    it("returns 404 report_file_missing when the file no longer exists on disk", async () => {
+      const { database, query } = createMockDatabase();
+      query.mockResolvedValueOnce([
+        { id: 15, file_path: "/srv/sentinelfit/data/reports/gone.pdf", export_format: "pdf" }
+      ]);
+      realpathMock.mockImplementation(async (p: string) => {
+        if (p === "/srv/sentinelfit/data/reports/gone.pdf") {
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        }
+        return p;
+      });
+      const service = createReportService(
+        database,
+        approvedConfig,
+        {
+          createPost: vi.fn(),
+          analytics: vi.fn(),
+          listPosts: vi.fn(),
+          recordView: vi.fn(),
+          recordSearch: vi.fn()
+        },
+        {
+          getLayout: vi.fn(),
+          saveLayout: vi.fn(),
+          createTemplate: vi.fn(),
+          listTemplates: vi.fn()
+        },
+        { log: vi.fn(async () => {}), alert: vi.fn(async () => {}), access: vi.fn(async () => {}) }
+      );
+
+      await expect(service.getInboxDownload(1, 15)).rejects.toMatchObject({
+        statusCode: 404,
+        code: "report_file_missing"
+      } satisfies Partial<AppError>);
+    });
   });
 });

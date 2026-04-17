@@ -299,7 +299,7 @@ describe("route and middleware behavior", () => {
       .set("x-station-token", "Desk-A");
 
     expect(statusResponse.status).toBe(200);
-    expect(statusResponse.body.data.requiresBootstrap).toBe(true);
+    expect(statusResponse.body).toEqual({ ok: true, data: { requiresBootstrap: true } });
 
     const bootstrapBody = {
       username: "owner",
@@ -312,8 +312,23 @@ describe("route and middleware behavior", () => {
       .send(bootstrapBody);
 
     expect(bootstrapResponse.status).toBe(200);
-    expect(bootstrapResponse.headers["set-cookie"]?.[0]).toContain("sf_session=");
-    expect(joinedCookies(bootstrapResponse.headers["set-cookie"])).toContain("sf_workstation=");
+    expect(bootstrapResponse.body.ok).toBe(true);
+    expect(bootstrapResponse.body.data).toEqual(
+      expect.objectContaining({
+        currentUser: expect.objectContaining({
+          id: 99,
+          username: "owner",
+          fullName: "Facility Owner",
+          roles: expect.arrayContaining(["Administrator", "Coach", "Member"])
+        }),
+        sessionSecret: expect.any(String),
+        sessionTimeoutMinutes: 30,
+        warmLockMinutes: 5,
+        hasPin: false
+      })
+    );
+    expect(bootstrapResponse.headers["set-cookie"]?.[0]).toContain("sf_session=bootstrap-session-token");
+    expect(joinedCookies(bootstrapResponse.headers["set-cookie"])).toContain("sf_workstation=bootstrap-binding-token");
     expect(authService.bootstrapAdministrator).toHaveBeenCalledWith(
       "owner",
       "Facility Owner",
@@ -331,8 +346,23 @@ describe("route and middleware behavior", () => {
       .send({ username: "admin", password: "Admin12345!X" });
 
     expect(response.status).toBe(200);
-    expect(response.headers["set-cookie"]?.[0]).toContain("sf_session=");
-    expect(joinedCookies(response.headers["set-cookie"])).toContain("sf_workstation=");
+    expect(response.body.ok).toBe(true);
+    expect(response.body.data).toEqual(
+      expect.objectContaining({
+        currentUser: expect.objectContaining({
+          id: 1,
+          username: "admin",
+          fullName: "System Administrator",
+          roles: expect.arrayContaining(["Administrator"])
+        }),
+        sessionSecret: expect.any(String),
+        sessionTimeoutMinutes: 30,
+        warmLockMinutes: 5,
+        hasPin: true
+      })
+    );
+    expect(response.headers["set-cookie"]?.[0]).toContain("sf_session=session-token");
+    expect(joinedCookies(response.headers["set-cookie"])).toContain("sf_workstation=binding-token");
     expect(authService.login).toHaveBeenCalledWith("admin", "Admin12345!X", expect.any(String), "Desk-A");
   });
 
@@ -345,6 +375,42 @@ describe("route and middleware behavior", () => {
       .send({ username: "admin", pin: "1234" });
 
     expect(response.status).toBe(401);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe("missing_session");
+    expect(typeof response.body.error.message).toBe("string");
+    expect(response.body.error.message.length).toBeGreaterThan(0);
+  });
+
+  it("completes PIN re-entry with fresh session material when the warm cookie is present", async () => {
+    const { app, authService } = createServices();
+
+    const response = await request(app)
+      .post("/api/auth/pin/reenter")
+      .set("Cookie", "sf_session=session-token; sf_workstation=binding-token")
+      .set("x-station-token", "Desk-A")
+      .send({ username: "admin", pin: "1234" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.ok).toBe(true);
+    expect(response.body.data.currentUser).toEqual(
+      expect.objectContaining({
+        username: "admin",
+        roles: expect.arrayContaining(["Administrator"])
+      })
+    );
+    expect(typeof response.body.data.sessionSecret).toBe("string");
+    expect(response.body.data.sessionSecret.length).toBeGreaterThan(0);
+    expect(response.body.data.hasPin).toBe(true);
+    expect(joinedCookies(response.headers["set-cookie"])).toContain("sf_session=new-session-token");
+    expect(joinedCookies(response.headers["set-cookie"])).toContain("sf_workstation=binding-token");
+    expect(authService.reenterWithPin).toHaveBeenCalledWith(
+      "admin",
+      "1234",
+      "session-token",
+      "Desk-A",
+      "binding-token",
+      expect.any(String)
+    );
   });
 
   it("blocks protected admin routes when request signatures are missing", async () => {
@@ -356,7 +422,10 @@ describe("route and middleware behavior", () => {
       .set("x-station-token", "Front-Desk-01");
 
     expect(response.status).toBe(401);
+    expect(response.body.ok).toBe(false);
     expect(response.body.error.code).toBe("signature_missing");
+    expect(typeof response.body.error.message).toBe("string");
+    expect(response.body.error.details).toBeNull();
   });
 
   it("rate-limits invalid signature attempts on protected routes", async () => {
@@ -367,17 +436,19 @@ describe("route and middleware behavior", () => {
       }
     });
 
-    await request(app)
+    const firstAttempt = await request(app)
       .get("/api/admin/console")
       .set("Cookie", "sf_session=session-token; sf_workstation=binding-token")
-      .set("x-station-token", "Front-Desk-01")
-      .expect(401);
+      .set("x-station-token", "Front-Desk-01");
+    expect(firstAttempt.status).toBe(401);
+    expect(firstAttempt.body.error.code).toBe("signature_missing");
 
-    await request(app)
+    const secondAttempt = await request(app)
       .get("/api/admin/console")
       .set("Cookie", "sf_session=session-token; sf_workstation=binding-token")
-      .set("x-station-token", "Front-Desk-01")
-      .expect(401);
+      .set("x-station-token", "Front-Desk-01");
+    expect(secondAttempt.status).toBe(401);
+    expect(secondAttempt.body.error.code).toBe("signature_missing");
 
     const limited = await request(app)
       .get("/api/admin/console")
@@ -385,7 +456,9 @@ describe("route and middleware behavior", () => {
       .set("x-station-token", "Front-Desk-01");
 
     expect(limited.status).toBe(429);
+    expect(limited.body.ok).toBe(false);
     expect(limited.body.error.code).toBe("rate_limited");
+    expect(limited.body.error.message).toMatch(/rate limit/i);
   });
 
   it("allows protected admin routes when the signed-session headers are valid", async () => {
@@ -397,6 +470,21 @@ describe("route and middleware behavior", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.ok).toBe(true);
+    expect(response.body.data.console).toEqual(
+      expect.objectContaining({
+        metrics: expect.objectContaining({
+          totalLogs: expect.any(Number),
+          openAlerts: expect.any(Number),
+          uptimeSeconds: expect.any(Number),
+          averageRequestDurationMs: expect.any(Number),
+          serverErrorRate: expect.any(Number),
+          lastReportDurationMs: expect.any(Number),
+          lastBackupDurationMs: expect.any(Number)
+        }),
+        recentLogs: expect.any(Array),
+        recentAlerts: expect.any(Array)
+      })
+    );
   });
 
   it("rejects protected routes when workstation binding cookie is missing", async () => {
@@ -421,6 +509,9 @@ describe("route and middleware behavior", () => {
       });
 
     expect(response.status).toBe(401);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe("workstation_binding_required");
+    expect(response.body.error.message).toMatch(/workstation binding/i);
   });
 
   it("rejects protected routes when workstation binding mismatches", async () => {
@@ -446,10 +537,21 @@ describe("route and middleware behavior", () => {
       .set("x-station-token", "Front-Desk-01")
       .expect(200);
 
+    expect(response.body.ok).toBe(true);
     expect(response.body.data.session).toEqual(
       expect.objectContaining({
+        currentUser: expect.objectContaining({
+          id: 1,
+          username: "admin",
+          fullName: "System Administrator",
+          roles: expect.arrayContaining(["Administrator"])
+        }),
+        hasPin: true,
         warmLocked: false,
-        sessionSecret: expect.any(String)
+        sessionSecret: expect.any(String),
+        warmLockMinutes: expect.any(Number),
+        sessionTimeoutMinutes: expect.any(Number),
+        lastActivityAt: expect.any(String)
       })
     );
   });
@@ -472,26 +574,30 @@ describe("route and middleware behavior", () => {
   it("supports signed session and PIN setup/logout flows", async () => {
     const { app, sessionSecret, authService } = createServices();
 
-    await request(app)
+    const sessionResponse = await request(app)
       .get("/api/auth/session")
       .set("Cookie", "sf_session=session-token; sf_workstation=binding-token")
       .set("x-station-token", "Front-Desk-01")
       .expect(200);
+    expect(sessionResponse.body.ok).toBe(true);
+    expect(sessionResponse.body.data.session.currentUser.username).toBe("admin");
 
     const pinBody = { pin: "1234" };
-    await request(app)
+    const pinSetupResponse = await request(app)
       .post("/api/auth/pin/setup")
       .set(signedHeaders("POST", "/api/auth/pin/setup", sessionSecret, pinBody))
       .send(pinBody)
       .expect(200);
+    expect(pinSetupResponse.body).toEqual({ ok: true, data: { hasPin: true } });
 
-    await request(app)
+    const logoutResponse = await request(app)
       .post("/api/auth/logout")
       .set(signedHeaders("POST", "/api/auth/logout", sessionSecret))
       .expect(200);
+    expect(logoutResponse.body).toEqual({ ok: true, data: { loggedOut: true } });
 
     expect(authService.setupPin).toHaveBeenCalledWith(1, "1234");
-    expect(authService.logout).toHaveBeenCalled();
+    expect(authService.logout).toHaveBeenCalledWith("session-token");
   });
 
   it("treats stale auth cookies as anonymous state for login and bootstrap status", async () => {
@@ -504,7 +610,9 @@ describe("route and middleware behavior", () => {
       .set("x-station-token", "Desk-A");
 
     expect(statusResponse.status).toBe(200);
+    expect(statusResponse.body).toEqual({ ok: true, data: { requiresBootstrap: false } });
     expect(joinedCookies(statusResponse.headers["set-cookie"])).toContain("sf_session=;");
+    expect(joinedCookies(statusResponse.headers["set-cookie"])).toContain("sf_workstation=;");
 
     authService.getSession.mockRejectedValueOnce(new AppError(401, "invalid_session", "Session is not active"));
     const loginResponse = await request(app)
@@ -514,6 +622,16 @@ describe("route and middleware behavior", () => {
       .send({ username: "admin", password: "Admin12345!X" });
 
     expect(loginResponse.status).toBe(200);
+    expect(loginResponse.body.ok).toBe(true);
+    expect(loginResponse.body.data).toEqual(
+      expect.objectContaining({
+        currentUser: expect.objectContaining({ username: "admin" }),
+        sessionSecret: expect.any(String),
+        sessionTimeoutMinutes: expect.any(Number),
+        warmLockMinutes: expect.any(Number),
+        hasPin: true
+      })
+    );
     expect(authService.login).toHaveBeenCalledWith("admin", "Admin12345!X", expect.any(String), "Desk-A");
   });
 
@@ -524,22 +642,26 @@ describe("route and middleware behavior", () => {
     };
     const { app } = createServices({ config: limitedConfig });
 
-    await request(app)
+    const firstStatus = await request(app)
       .get("/api/auth/bootstrap/status")
       .set("x-station-token", "Desk-A")
       .expect(200);
+    expect(firstStatus.body).toEqual({ ok: true, data: { requiresBootstrap: false } });
 
-    await request(app)
+    const firstSession = await request(app)
       .get("/api/auth/session")
       .set("x-station-token", "Desk-A")
       .expect(200);
+    expect(firstSession.body).toEqual({ ok: true, data: { session: null } });
 
     const limitedResponse = await request(app)
       .get("/api/auth/bootstrap/status")
       .set("x-station-token", "Desk-A");
 
     expect(limitedResponse.status).toBe(429);
+    expect(limitedResponse.body.ok).toBe(false);
     expect(limitedResponse.body.error.code).toBe("rate_limited");
+    expect(limitedResponse.body.error.message).toMatch(/rate limit/i);
   });
 
   it("rejects protected API access while the session is warm locked", async () => {
@@ -574,7 +696,10 @@ describe("route and middleware behavior", () => {
       .set(signedHeaders("GET", "/api/admin/console", sessionSecret));
 
     expect(response.status).toBe(423);
+    expect(response.body.ok).toBe(false);
     expect(response.body.error.code).toBe("warm_locked");
+    expect(response.body.error.message).toMatch(/PIN re-entry/i);
+    expect(response.body.error.details).toBeNull();
   });
 
   it("rejects stale signed timestamps and non-allowlisted IPs", async () => {
@@ -591,7 +716,9 @@ describe("route and middleware behavior", () => {
       .set("x-sf-signature", signature);
 
     expect(staleResponse.status).toBe(401);
+    expect(staleResponse.body.ok).toBe(false);
     expect(staleResponse.body.error.code).toBe("timestamp_stale");
+    expect(staleResponse.body.error.message).toMatch(/allowed window/i);
 
     const restrictedApp = createServices({
       config: {
@@ -602,7 +729,10 @@ describe("route and middleware behavior", () => {
     const forbiddenResponse = await request(restrictedApp).get("/");
 
     expect(forbiddenResponse.status).toBe(403);
+    expect(forbiddenResponse.body.ok).toBe(false);
     expect(forbiddenResponse.body.error.code).toBe("ip_forbidden");
+    expect(forbiddenResponse.body.error.message).toMatch(/allowlisted/i);
+    expect(forbiddenResponse.body.error.details).toBeNull();
   });
 
   it("enforces role boundaries on administrator-only routes", async () => {
@@ -615,7 +745,9 @@ describe("route and middleware behavior", () => {
       .set(signedHeaders("GET", "/api/admin/console", sessionSecret));
 
     expect(response.status).toBe(403);
+    expect(response.body.ok).toBe(false);
     expect(response.body.error.code).toBe("forbidden");
+    expect(response.body.error.message).toMatch(/do not have access/i);
   });
 
   it("allows subscribed non-admin users to access inbox routes while keeping report authoring admin-only", async () => {
@@ -627,28 +759,40 @@ describe("route and middleware behavior", () => {
       .get("/api/reports/inbox")
       .set(signedHeaders("GET", "/api/reports/inbox", sessionSecret))
       .expect(200);
+    expect(inboxResponse.body.ok).toBe(true);
     expect(inboxResponse.body.data.inbox[0]).toEqual(
       expect.objectContaining({
-        fileName: "weekly-snapshot.pdf"
+        fileName: "weekly-snapshot.pdf",
+        format: "pdf",
+        status: "completed",
+        isRead: false,
+        reportExportId: 1,
+        title: expect.any(String),
+        createdAt: expect.any(String)
       })
     );
     expect(inboxResponse.body.data.inbox[0]).not.toHaveProperty("filePath");
     expect(inboxResponse.body.data.inbox[0]).not.toHaveProperty("sharedFilePath");
 
-    await request(app)
+    const downloadResponse = await request(app)
       .get("/api/reports/inbox/1/download")
       .set(signedHeaders("GET", "/api/reports/inbox/1/download", sessionSecret))
       .expect(200);
+    expect(downloadResponse.headers["content-disposition"]).toContain("node.exe");
 
-    await request(app)
+    const schedulesBlocked = await request(app)
       .get("/api/reports/schedules")
-      .set(signedHeaders("GET", "/api/reports/schedules", sessionSecret))
-      .expect(403);
+      .set(signedHeaders("GET", "/api/reports/schedules", sessionSecret));
+    expect(schedulesBlocked.status).toBe(403);
+    expect(schedulesBlocked.body.error.code).toBe("forbidden");
+    expect(schedulesBlocked.body.ok).toBe(false);
 
-    await request(app)
+    const recipientsBlocked = await request(app)
       .get("/api/reports/recipients")
-      .set(signedHeaders("GET", "/api/reports/recipients", sessionSecret))
-      .expect(403);
+      .set(signedHeaders("GET", "/api/reports/recipients", sessionSecret));
+    expect(recipientsBlocked.status).toBe(403);
+    expect(recipientsBlocked.body.error.code).toBe("forbidden");
+    expect(recipientsBlocked.body.ok).toBe(false);
   });
 
   it("allows members to access self face enrollment endpoints while preserving service-level scope checks", async () => {
@@ -656,20 +800,33 @@ describe("route and middleware behavior", () => {
       roles: ["Member"]
     });
 
-    await request(app)
+    const allowed = await request(app)
       .post("/api/faces/challenge")
       .set(signedHeaders("POST", "/api/faces/challenge", sessionSecret, { memberUserId: 1 }))
       .send({ memberUserId: 1 })
       .expect(200);
+    expect(allowed.body.ok).toBe(true);
+    expect(allowed.body.data.challenge).toEqual(
+      expect.objectContaining({
+        challengeId: expect.any(String),
+        issuedAt: expect.any(String),
+        expiresAt: expect.any(String),
+        minDelayMs: expect.any(Number),
+        maxDelayMs: expect.any(Number)
+      })
+    );
 
     faceService.startLivenessChallenge.mockRejectedValueOnce(
       new AppError(403, "forbidden", "You do not have access to this member's face records")
     );
-    await request(app)
+    const denied = await request(app)
       .post("/api/faces/challenge")
       .set(signedHeaders("POST", "/api/faces/challenge", sessionSecret, { memberUserId: 77 }))
-      .send({ memberUserId: 77 })
-      .expect(403);
+      .send({ memberUserId: 77 });
+    expect(denied.status).toBe(403);
+    expect(denied.body.ok).toBe(false);
+    expect(denied.body.error.code).toBe("forbidden");
+    expect(denied.body.error.message).toMatch(/do not have access/i);
   });
 
   it("rejects malformed analytics filters before they reach the service layer", async () => {
@@ -681,7 +838,11 @@ describe("route and middleware behavior", () => {
       .set(signedHeaders("GET", path, sessionSecret));
 
     expect(response.status).toBe(400);
+    expect(response.body.ok).toBe(false);
     expect(response.body.error.code).toBe("validation_failed");
+    expect(response.body.error.details).toEqual(
+      expect.objectContaining({ fieldErrors: expect.any(Object) })
+    );
   });
 
   it("rejects semantically invalid analytics dates", async () => {
@@ -693,7 +854,11 @@ describe("route and middleware behavior", () => {
       .set(signedHeaders("GET", path, sessionSecret));
 
     expect(response.status).toBe(400);
+    expect(response.body.ok).toBe(false);
     expect(response.body.error.code).toBe("validation_failed");
+    expect(response.body.error.details.fieldErrors.startDate ?? []).toEqual(
+      expect.arrayContaining([expect.stringMatching(/calendar date/i)])
+    );
   });
 
   it("returns forbidden when content routes attempt out-of-scope location access", async () => {
@@ -705,12 +870,15 @@ describe("route and middleware behavior", () => {
       new AppError(403, "forbidden_location_scope", "You do not have access to this location")
     );
 
-    await request(app)
+    const postsBlocked = await request(app)
       .get("/api/content/posts?locationCode=Branch")
-      .set(signedHeaders("GET", "/api/content/posts?locationCode=Branch", sessionSecret))
-      .expect(403);
+      .set(signedHeaders("GET", "/api/content/posts?locationCode=Branch", sessionSecret));
+    expect(postsBlocked.status).toBe(403);
+    expect(postsBlocked.body.ok).toBe(false);
+    expect(postsBlocked.body.error.code).toBe("forbidden_location_scope");
+    expect(postsBlocked.body.error.message).toMatch(/location/i);
 
-    await request(app)
+    const searchBlocked = await request(app)
       .post("/api/content/search-events")
       .set(
         signedHeaders("POST", "/api/content/search-events", sessionSecret, {
@@ -718,8 +886,10 @@ describe("route and middleware behavior", () => {
           locationCode: "Branch"
         })
       )
-      .send({ searchTerm: "mobility", locationCode: "Branch" })
-      .expect(403);
+      .send({ searchTerm: "mobility", locationCode: "Branch" });
+    expect(searchBlocked.status).toBe(403);
+    expect(searchBlocked.body.ok).toBe(false);
+    expect(searchBlocked.body.error.code).toBe("forbidden_location_scope");
   });
 
   it("rejects signature validation when signed query parameters are tampered", async () => {
@@ -731,7 +901,9 @@ describe("route and middleware behavior", () => {
       .set(signedHeaders("GET", signedPath, sessionSecret));
 
     expect(response.status).toBe(401);
+    expect(response.body.ok).toBe(false);
     expect(response.body.error.code).toBe("signature_invalid");
+    expect(response.body.error.message).toMatch(/signature/i);
   });
 
   it("rejects nonce replay across app restarts using durable nonce storage", async () => {
@@ -746,7 +918,7 @@ describe("route and middleware behavior", () => {
       createSignaturePayload("GET", "/api/admin/console", timestamp, nonce, undefined)
     );
 
-    await request(firstApp)
+    const firstResponse = await request(firstApp)
       .get("/api/admin/console")
       .set({
         Cookie: "sf_session=session-token; sf_workstation=binding-token",
@@ -756,6 +928,8 @@ describe("route and middleware behavior", () => {
         "x-sf-signature": signature
       })
       .expect(200);
+    expect(firstResponse.body.ok).toBe(true);
+    expect(firstResponse.body.data.console.metrics).toBeDefined();
 
     const { app: restartedApp } = createServices({
       database: sharedDatabase
@@ -772,14 +946,28 @@ describe("route and middleware behavior", () => {
       });
 
     expect(replayResponse.status).toBe(401);
+    expect(replayResponse.body.ok).toBe(false);
     expect(replayResponse.body.error.code).toBe("nonce_replayed");
+    expect(replayResponse.body.error.message).toMatch(/already been used/i);
   });
 
   it("covers the protected route families with valid signed requests", async () => {
-    const { app, sessionSecret } = createServices();
+    const { app, sessionSecret, contentService, faceService } = createServices();
 
-    await request(app).get("/api/self/profile").set(signedHeaders("GET", "/api/self/profile", sessionSecret)).expect(200);
-    await request(app).get("/api/members").set(signedHeaders("GET", "/api/members", sessionSecret)).expect(200);
+    const profileResponse = await request(app)
+      .get("/api/self/profile")
+      .set(signedHeaders("GET", "/api/self/profile", sessionSecret))
+      .expect(200);
+    expect(profileResponse.body.ok).toBe(true);
+    expect(profileResponse.body.data.member).toEqual(expect.objectContaining({ id: 1 }));
+
+    const membersResponse = await request(app)
+      .get("/api/members")
+      .set(signedHeaders("GET", "/api/members", sessionSecret))
+      .expect(200);
+    expect(membersResponse.body.data).toEqual(
+      expect.objectContaining({ members: expect.any(Array), coaches: expect.any(Array) })
+    );
 
     const createMemberBody = {
       username: "member-two",
@@ -788,42 +976,53 @@ describe("route and middleware behavior", () => {
       phone: null,
       locationCode: "HQ"
     };
-    await request(app)
+    const createMemberResponse = await request(app)
       .post("/api/members")
       .set(signedHeaders("POST", "/api/members", sessionSecret, createMemberBody))
       .send(createMemberBody)
       .expect(200);
+    expect(createMemberResponse.body.data.member).toEqual(expect.objectContaining({ id: 7 }));
 
     const coachAssignmentBody = { coachUserId: 2 };
-    await request(app)
+    const coachAssignmentResponse = await request(app)
       .post("/api/members/7/coach-assignment")
       .set(signedHeaders("POST", "/api/members/7/coach-assignment", sessionSecret, coachAssignmentBody))
       .send(coachAssignmentBody)
       .expect(200);
+    expect(coachAssignmentResponse.body.data.member).toEqual(expect.objectContaining({ id: 7 }));
 
     const coachLocationBody = { locationCode: "HQ" };
-    await request(app)
+    const coachLocationPost = await request(app)
       .post("/api/members/coaches/2/locations")
       .set(signedHeaders("POST", "/api/members/coaches/2/locations", sessionSecret, coachLocationBody))
       .send(coachLocationBody)
       .expect(200);
-    await request(app)
+    expect(coachLocationPost.body.data.location).toEqual(
+      expect.objectContaining({ coachUserId: 2, locationCode: "HQ", isActive: true })
+    );
+    const coachLocationsList = await request(app)
       .get("/api/members/coaches/2/locations")
       .set(signedHeaders("GET", "/api/members/coaches/2/locations", sessionSecret))
       .expect(200);
+    expect(coachLocationsList.body.data.locations).toHaveLength(1);
+    expect(coachLocationsList.body.data.locations[0]).toEqual(
+      expect.objectContaining({ coachUserId: 2, locationCode: "HQ" })
+    );
 
     const consentBody = { consentStatus: "granted" };
-    await request(app)
+    const memberConsentResponse = await request(app)
       .post("/api/members/7/consent/face")
       .set(signedHeaders("POST", "/api/members/7/consent/face", sessionSecret, consentBody))
       .send(consentBody)
       .expect(200);
+    expect(memberConsentResponse.body.data.member).toEqual(expect.objectContaining({ id: 7 }));
 
-    await request(app)
+    const selfConsentResponse = await request(app)
       .post("/api/self/consent/face")
       .set(signedHeaders("POST", "/api/self/consent/face", sessionSecret, consentBody))
       .send(consentBody)
       .expect(200);
+    expect(selfConsentResponse.body.data.member).toEqual(expect.objectContaining({ id: 7 }));
 
     const enrollBody = {
       memberUserId: 7,
@@ -832,12 +1031,16 @@ describe("route and middleware behavior", () => {
       centerImageBase64: "data:image/png;base64,abc",
       turnImageBase64: "data:image/png;base64,abc"
     };
-    await request(app)
+    const challengeResponse = await request(app)
       .post("/api/faces/challenge")
       .set(signedHeaders("POST", "/api/faces/challenge", sessionSecret, { memberUserId: 7 }))
       .send({ memberUserId: 7 })
       .expect(200);
-    await request(app)
+    expect(challengeResponse.body.data.challenge).toEqual(
+      expect.objectContaining({ challengeId: "challenge-1" })
+    );
+
+    const dedupResponse = await request(app)
       .post("/api/faces/dedup-check")
       .set(signedHeaders("POST", "/api/faces/dedup-check", sessionSecret, {
         memberUserId: 7,
@@ -852,82 +1055,126 @@ describe("route and middleware behavior", () => {
         turnImageBase64: "data:image/png;base64,abc"
       })
       .expect(200);
+    expect(dedupResponse.body.data.dedup).toEqual(
+      expect.objectContaining({ warningDetected: false })
+    );
 
-    await request(app)
+    const enrollResponse = await request(app)
       .post("/api/faces/enroll")
       .set(signedHeaders("POST", "/api/faces/enroll", sessionSecret, enrollBody))
       .send(enrollBody)
       .expect(200);
+    expect(enrollResponse.body.data.result).toEqual(expect.objectContaining({ faceRecordId: 5 }));
 
-    await request(app)
+    const deactivateResponse = await request(app)
       .patch("/api/faces/5/deactivate")
       .set(signedHeaders("PATCH", "/api/faces/5/deactivate", sessionSecret))
       .expect(200);
+    expect(deactivateResponse.body.data).toEqual({ deactivated: true });
+    expect(faceService.deactivateFace).toHaveBeenCalledWith(5, 1, expect.any(Object));
 
-    await request(app)
+    const historyResponse = await request(app)
       .get("/api/faces/history/7")
       .set(signedHeaders("GET", "/api/faces/history/7", sessionSecret))
       .expect(200);
+    expect(historyResponse.body.data.history).toHaveLength(1);
+    expect(historyResponse.body.data.history[0]).toEqual(expect.objectContaining({ faceRecordId: 5 }));
 
-    await request(app)
+    const auditResponse = await request(app)
+      .get("/api/faces/audit/7")
+      .set(signedHeaders("GET", "/api/faces/audit/7", sessionSecret))
+      .expect(200);
+    expect(Array.isArray(auditResponse.body.data.auditTrail)).toBe(true);
+    expect(faceService.getAuditTrail).toHaveBeenCalledWith(7, expect.any(Object));
+
+    const postsResponse = await request(app)
       .get("/api/content/posts")
       .set(signedHeaders("GET", "/api/content/posts", sessionSecret))
       .expect(200);
+    expect(postsResponse.body.data.posts[0]).toEqual(
+      expect.objectContaining({ title: "Mobility", kind: "tip" })
+    );
 
     const createPostBody = { kind: "tip", title: "Mobility", body: "Body", locationCode: "HQ" };
-    await request(app)
+    const createPostResponse = await request(app)
       .post("/api/content/posts")
       .set(signedHeaders("POST", "/api/content/posts", sessionSecret, createPostBody))
       .send(createPostBody)
       .expect(200);
+    expect(createPostResponse.body.data.post).toEqual(expect.objectContaining({ id: 9 }));
+    expect(contentService.createPost).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "tip", title: "Mobility", locationCode: "HQ" })
+    );
 
     const viewBody = { postId: 9, locationCode: "HQ" };
-    await request(app)
+    const viewResponse = await request(app)
       .post("/api/content/views")
       .set(signedHeaders("POST", "/api/content/views", sessionSecret, viewBody))
       .send(viewBody)
       .expect(200);
+    expect(viewResponse.body.data).toEqual({ recorded: true });
+    expect(contentService.recordView).toHaveBeenCalledWith(
+      expect.objectContaining({ postId: 9, stationToken: expect.any(String) })
+    );
 
     const searchBody = { searchTerm: "mobility", locationCode: "HQ" };
-    await request(app)
+    const searchResponse = await request(app)
       .post("/api/content/search-events")
       .set(signedHeaders("POST", "/api/content/search-events", sessionSecret, searchBody))
       .send(searchBody)
       .expect(200);
+    expect(searchResponse.body.data).toEqual({ recorded: true });
 
-    await request(app)
+    const analyticsResponse = await request(app)
       .get("/api/content/analytics?locationCode=HQ")
       .set(signedHeaders("GET", "/api/content/analytics?locationCode=HQ", sessionSecret))
       .expect(200);
+    expect(analyticsResponse.body.data.analytics).toEqual(
+      expect.objectContaining({
+        viewsByStation: expect.any(Array),
+        topPosts: expect.any(Array),
+        searchTrends: expect.any(Array),
+        posts: expect.any(Array)
+      })
+    );
 
-    await request(app)
+    const dashboardGetResponse = await request(app)
       .get("/api/dashboards/me")
       .set(signedHeaders("GET", "/api/dashboards/me", sessionSecret))
       .expect(200);
+    expect(dashboardGetResponse.body.data).toEqual(
+      expect.objectContaining({ layout: expect.any(Array), templates: expect.any(Array) })
+    );
 
     const dashboardBody = { layout: [] };
-    await request(app)
+    const dashboardPutResponse = await request(app)
       .put("/api/dashboards/me")
       .set(signedHeaders("PUT", "/api/dashboards/me", sessionSecret, dashboardBody))
       .send(dashboardBody)
       .expect(200);
+    expect(dashboardPutResponse.body.data.layout).toEqual([]);
 
     const templateBody = { name: "Template", layout: [] };
-    await request(app)
+    const templateResponse = await request(app)
       .post("/api/dashboards/templates")
       .set(signedHeaders("POST", "/api/dashboards/templates", sessionSecret, templateBody))
       .send(templateBody)
       .expect(200);
+    expect(templateResponse.body.data.template).toEqual(
+      expect.objectContaining({ id: 1, name: "Template" })
+    );
 
-    await request(app)
+    const schedulesResponse = await request(app)
       .get("/api/reports/schedules")
       .set(signedHeaders("GET", "/api/reports/schedules", sessionSecret))
       .expect(200);
+    expect(Array.isArray(schedulesResponse.body.data.schedules)).toBe(true);
 
-    await request(app)
+    const recipientsResponse = await request(app)
       .get("/api/reports/recipients")
       .set(signedHeaders("GET", "/api/reports/recipients", sessionSecret))
       .expect(200);
+    expect(Array.isArray(recipientsResponse.body.data.recipients)).toBe(true);
 
     const scheduleBody = {
       templateId: 1,
@@ -936,39 +1183,47 @@ describe("route and middleware behavior", () => {
       format: "pdf",
       subscriberUserIds: [1]
     };
-    await request(app)
+    const scheduleResponse = await request(app)
       .post("/api/reports/schedules")
       .set(signedHeaders("POST", "/api/reports/schedules", sessionSecret, scheduleBody))
       .send(scheduleBody)
       .expect(200);
+    expect(scheduleResponse.body.data.schedule).toEqual(expect.objectContaining({ id: 1 }));
 
     const generateBody = { templateId: 1, format: "pdf", locationCode: "HQ" };
-    await request(app)
+    const generateResponse = await request(app)
       .post("/api/reports/generate")
       .set(signedHeaders("POST", "/api/reports/generate", sessionSecret, generateBody))
       .send(generateBody)
       .expect(200);
+    expect(generateResponse.body.data.report).toEqual(expect.objectContaining({ exportId: 1 }));
 
-    await request(app)
+    const inboxResponse = await request(app)
       .get("/api/reports/inbox")
       .set(signedHeaders("GET", "/api/reports/inbox", sessionSecret))
       .expect(200);
+    expect(inboxResponse.body.data.inbox[0]).toEqual(
+      expect.objectContaining({ fileName: "weekly-snapshot.pdf", format: "pdf" })
+    );
 
-    await request(app)
+    const downloadResponse = await request(app)
       .get("/api/reports/inbox/1/download")
       .set(signedHeaders("GET", "/api/reports/inbox/1/download", sessionSecret))
       .expect(200);
+    expect(downloadResponse.headers["content-disposition"]).toContain("node.exe");
 
-    await request(app)
+    const backupResponse = await request(app)
       .post("/api/admin/backups")
       .set(signedHeaders("POST", "/api/admin/backups", sessionSecret))
       .expect(200);
+    expect(backupResponse.body.data.backup).toEqual(expect.objectContaining({ id: 3 }));
 
     const recoveryBody = { backupRunId: 3 };
-    await request(app)
+    const recoveryResponse = await request(app)
       .post("/api/admin/recovery/dry-run")
       .set(signedHeaders("POST", "/api/admin/recovery/dry-run", sessionSecret, recoveryBody))
       .send(recoveryBody)
       .expect(200);
+    expect(recoveryResponse.body.data.recovery).toEqual(expect.objectContaining({ status: "passed" }));
   });
 });

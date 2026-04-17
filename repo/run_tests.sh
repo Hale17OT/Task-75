@@ -7,22 +7,35 @@ cleanup() {
 
 trap cleanup EXIT
 
+# All cryptographic primitives, network probes, and text helpers run inside
+# Docker containers so this script does not depend on host OpenSSL, curl,
+# coreutils, or any other host-installed binary beyond the Docker CLI itself.
+helper_image="${HELPER_DOCKER_IMAGE:-node:20-alpine}"
+
 rand_hex() {
   local bytes="$1"
-  if command -v openssl >/dev/null 2>&1; then
-    openssl rand -hex "$bytes"
-  else
-    head -c "$bytes" /dev/urandom | od -An -tx1 | tr -d ' \n'
-  fi
+  docker run --rm "$helper_image" node -e \
+    "process.stdout.write(require('crypto').randomBytes(${bytes}).toString('hex'))"
 }
 
 rand_b64() {
   local bytes="$1"
-  if command -v openssl >/dev/null 2>&1; then
-    openssl rand -base64 "$bytes" | tr -d '\n'
-  else
-    head -c "$bytes" /dev/urandom | base64 | tr -d '\n'
-  fi
+  docker run --rm "$helper_image" node -e \
+    "process.stdout.write(require('crypto').randomBytes(${bytes}).toString('base64'))"
+}
+
+http_ok() {
+  # Probe a URL via a containerized Node fetch; returns 0 on 2xx, 1 otherwise.
+  local url="$1"
+  docker run --rm --network host "$helper_image" node -e "
+    fetch('${url}').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1));
+  " >/dev/null 2>&1
+}
+
+backend_exited() {
+  # Returns 0 (true) when the backend service is in an "exited" state.
+  # Uses docker compose's own --status filter so no host text-processing tools are needed.
+  [ -n "$(docker compose ps backend --status exited -q 2>/dev/null)" ]
 }
 
 echo "[tests] resetting Docker state for deterministic credentials"
@@ -46,7 +59,7 @@ if [ -z "${BACKEND_KEY_VAULT_MASTER_KEY:-}" ] || [ "${BACKEND_KEY_VAULT_MASTER_K
   echo "[tests] generated ephemeral BACKEND_KEY_VAULT_MASTER_KEY for test runtime"
 fi
 
-compose_project="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"
+compose_project="${COMPOSE_PROJECT_NAME:-${PWD##*/}}"
 playwright_image="${PLAYWRIGHT_DOCKER_IMAGE:-node:20-bookworm}"
 playwright_base_url="${PLAYWRIGHT_BASE_URL:-http://127.0.0.1:5173}"
 playwright_backend_url="${PLAYWRIGHT_BACKEND_URL:-http://127.0.0.1:3000}"
@@ -96,12 +109,12 @@ echo "[tests] starting Docker runtime"
 docker compose up --build -d
 
 echo "[tests] waiting for services"
-for i in $(seq 1 60); do
-  if docker compose ps backend 2>/dev/null | grep -qi "exited"; then
+for ((i=1; i<=60; i+=1)); do
+  if backend_exited; then
     echo "[tests] backend container exited during startup, retrying backend service"
     docker compose up -d backend >/dev/null 2>&1 || true
   fi
-  if curl -fsS http://localhost:3000/health/ready >/dev/null 2>&1 && curl -fsS http://localhost:5173 >/dev/null 2>&1; then
+  if http_ok "http://localhost:3000/health/ready" && http_ok "http://localhost:5173"; then
     break
   fi
 
@@ -198,6 +211,114 @@ if [ "$security_status" != "403" ]; then
   exit 1
 fi
 
+echo "[tests] live HTTP regression: signed admin sweep across protected route families"
+admin_sweep_status="$(docker compose exec -T backend node <<'NODE'
+const crypto = require('node:crypto');
+
+const sign = (secret, method, path, body) => {
+  const timestamp = new Date().toISOString();
+  const nonce = crypto.randomUUID();
+  const bodyString = body ? JSON.stringify(body) : "";
+  const bodyHash = crypto.createHash("sha256").update(bodyString).digest("hex");
+  const payload = [method.toUpperCase(), path, timestamp, nonce, bodyHash].join("\n");
+  const signature = crypto
+    .createHmac("sha256", Buffer.from(secret, "base64"))
+    .update(payload)
+    .digest("hex");
+  return { timestamp, nonce, signature };
+};
+
+const parseCookies = (response) => {
+  const values = response.headers.getSetCookie?.() ?? [];
+  const map = new Map();
+  for (const value of values) {
+    const [pair] = value.split(";");
+    const [key, cookieValue] = pair.split("=");
+    map.set(key.trim(), cookieValue);
+  }
+  return map;
+};
+
+const fail = (reason) => {
+  console.log(reason);
+  process.exit(0);
+};
+
+(async () => {
+  const login = await fetch("http://127.0.0.1:3000/api/auth/login", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-station-token": "Regression-Desk-02"
+    },
+    body: JSON.stringify({ username: "admin", password: "Admin12345!X" })
+  });
+  if (!login.ok) {
+    fail(`admin_login_failed_${login.status}`);
+    return;
+  }
+  const loginPayload = await login.json();
+  const sessionSecret = loginPayload?.data?.sessionSecret;
+  const cookies = parseCookies(login);
+  const sessionCookie = cookies.get("sf_session");
+  const workstationCookie = cookies.get("sf_workstation");
+  if (!sessionCookie || !workstationCookie || !sessionSecret) {
+    fail("admin_missing_auth_material");
+    return;
+  }
+
+  const cookieHeader = `sf_session=${sessionCookie}; sf_workstation=${workstationCookie}`;
+  const probes = [
+    { method: "GET", path: "/api/self/profile" },
+    { method: "GET", path: "/api/members" },
+    { method: "GET", path: "/api/content/posts" },
+    { method: "GET", path: "/api/content/analytics?locationCode=HQ" },
+    { method: "GET", path: "/api/dashboards/me" },
+    { method: "GET", path: "/api/reports/schedules" },
+    { method: "GET", path: "/api/reports/recipients" },
+    { method: "GET", path: "/api/reports/inbox" },
+    { method: "GET", path: "/api/admin/console" }
+  ];
+
+  for (const probe of probes) {
+    let response;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const sig = sign(sessionSecret, probe.method, probe.path);
+      response = await fetch(`http://127.0.0.1:3000${probe.path}`, {
+        method: probe.method,
+        headers: {
+          cookie: cookieHeader,
+          "x-station-token": "Regression-Desk-02",
+          "x-sf-timestamp": sig.timestamp,
+          "x-sf-nonce": sig.nonce,
+          "x-sf-signature": sig.signature
+        }
+      });
+      if (response.status !== 429) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 65000));
+    }
+    if (!response || !response.ok) {
+      fail(`probe_failed_${probe.method}_${probe.path}_${response ? response.status : "no_response"}`);
+      return;
+    }
+    const body = await response.json();
+    if (!body?.ok) {
+      fail(`probe_body_not_ok_${probe.path}`);
+      return;
+    }
+  }
+
+  console.log("ok");
+})();
+NODE
+)"
+if [ "$admin_sweep_status" != "ok" ]; then
+  echo "[tests] signed admin sweep failed: $admin_sweep_status"
+  exit 1
+fi
+
 echo "[tests] integrity regression: biometric audit table is immutable"
 docker compose exec -T mysql mysql -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE:-sentinelfit}" -e \
   "INSERT INTO biometric_audit_log (member_user_id, face_record_id, event_type, details_json, actor_user_id) VALUES (1, NULL, 'immutability_probe', JSON_OBJECT('source', 'run_tests'), 1);" >/dev/null
@@ -274,12 +395,12 @@ docker compose down --volumes --remove-orphans >/dev/null 2>&1 || true
 BACKEND_DEMO_SEED_USERS=false docker compose up --build -d
 
 echo "[tests] waiting for clean-install services"
-for i in $(seq 1 60); do
-  if docker compose ps backend 2>/dev/null | grep -qi "exited"; then
+for ((i=1; i<=60; i+=1)); do
+  if backend_exited; then
     echo "[tests] backend container exited during clean-install startup, retrying backend service"
     docker compose up -d backend >/dev/null 2>&1 || true
   fi
-  if curl -fsS http://localhost:3000/health/ready >/dev/null 2>&1 && curl -fsS http://localhost:5173 >/dev/null 2>&1; then
+  if http_ok "http://localhost:3000/health/ready" && http_ok "http://localhost:5173"; then
     break
   fi
 
