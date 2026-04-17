@@ -7,6 +7,7 @@ export interface AuthenticatedUser {
   username: string;
   fullName: string;
   roles: Role[];
+  hasMemberProfile?: boolean;
 }
 
 export interface AppErrorShape {

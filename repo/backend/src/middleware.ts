@@ -20,6 +20,19 @@ export const createMiddlewareSuite = (
   loggingService: LoggingService
 ) => {
   const rateLimiter = createRateLimiter();
+  const rateWindowMs = 60_000;
+  const ipAbuseLimitMultiplier = 3;
+  const resolveIpAddress = (req: Request) => req.ip ?? req.socket.remoteAddress ?? "unknown";
+  const resolveStationToken = (req: Request) => {
+    const stationToken = req.stationToken?.trim();
+    return stationToken && stationToken.length > 0 ? stationToken : "unknown-station";
+  };
+  const resolveAuthScope = (currentUser?: Request["currentUser"], currentSession?: Request["currentSession"]) =>
+    currentUser?.id
+      ? `user:${currentUser.id}`
+      : currentSession?.sessionToken
+        ? `session:${currentSession.sessionToken}`
+        : "anonymous";
   const nonceStore = (() => {
     return {
       async assertFresh(sessionToken: string, nonce: string) {
@@ -77,8 +90,18 @@ export const createMiddlewareSuite = (
 
   const rateLimitedSignIn = (req: Request, _res: Response, next: NextFunction) => {
     try {
-      const ipAddress = req.ip ?? req.socket.remoteAddress ?? "unknown";
-      rateLimiter.check(`signin:${ipAddress}`, config.LOGIN_RATE_LIMIT_PER_MINUTE, 60_000);
+      const ipAddress = resolveIpAddress(req);
+      const stationToken = resolveStationToken(req);
+      rateLimiter.check(
+        `signin:abuse-ip:${ipAddress}`,
+        config.LOGIN_RATE_LIMIT_PER_MINUTE * ipAbuseLimitMultiplier,
+        rateWindowMs
+      );
+      rateLimiter.check(
+        `signin:ip:${ipAddress}:station:${stationToken}`,
+        config.LOGIN_RATE_LIMIT_PER_MINUTE,
+        rateWindowMs
+      );
       next();
     } catch (error) {
       next(error);
@@ -87,8 +110,18 @@ export const createMiddlewareSuite = (
 
   const rateLimitedApi = (req: Request, _res: Response, next: NextFunction) => {
     try {
-      const ipAddress = req.ip ?? req.socket.remoteAddress ?? "unknown";
-      rateLimiter.check(`api:${ipAddress}`, config.API_RATE_LIMIT_PER_MINUTE, 60_000);
+      const ipAddress = resolveIpAddress(req);
+      const stationToken = resolveStationToken(req);
+      rateLimiter.check(
+        `api:abuse-ip:${ipAddress}`,
+        config.API_RATE_LIMIT_PER_MINUTE * ipAbuseLimitMultiplier,
+        rateWindowMs
+      );
+      rateLimiter.check(
+        `api:ip:${ipAddress}:station:${stationToken}`,
+        config.API_RATE_LIMIT_PER_MINUTE,
+        rateWindowMs
+      );
       next();
     } catch (error) {
       next(error);
@@ -126,12 +159,6 @@ export const createMiddlewareSuite = (
 
   const requireSignedSession = async (req: Request, _res: Response, next: NextFunction) => {
     try {
-      rateLimiter.check(
-        `auth:${req.ip ?? req.socket.remoteAddress ?? "unknown"}`,
-        config.AUTH_RATE_LIMIT_PER_MINUTE,
-        60_000
-      );
-
       const sessionToken = req.cookies.sf_session as string | undefined;
       if (!sessionToken) {
         throw new AppError(401, "missing_session", "Session cookie is required");
@@ -145,6 +172,22 @@ export const createMiddlewareSuite = (
       if (sessionData.hasPin && sessionData.session.warmLockedAt) {
         throw new AppError(423, "warm_locked", "PIN re-entry is required to continue on this workstation");
       }
+
+      const ipAddress = resolveIpAddress(req);
+      const stationToken = resolveStationToken(req);
+      rateLimiter.check(
+        `auth:abuse-ip:${ipAddress}`,
+        config.AUTH_RATE_LIMIT_PER_MINUTE * ipAbuseLimitMultiplier,
+        rateWindowMs
+      );
+      rateLimiter.check(
+        `auth:ip:${ipAddress}:station:${stationToken}:scope:${resolveAuthScope(
+          sessionData.currentUser,
+          sessionData.session
+        )}`,
+        config.AUTH_RATE_LIMIT_PER_MINUTE,
+        rateWindowMs
+      );
 
       const timestamp = req.header("x-sf-timestamp");
       const nonce = req.header("x-sf-nonce");

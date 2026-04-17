@@ -5,6 +5,7 @@ export interface SessionUser {
   username: string;
   fullName: string;
   roles: Role[];
+  hasMemberProfile?: boolean;
 }
 
 export interface SessionInfo {

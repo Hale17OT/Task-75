@@ -391,6 +391,30 @@ describe("AnalyticsView", () => {
     });
     expect(wrapper.text()).toContain("Select a chart bar to inspect");
   });
+
+  it("emits selectStation, selectPost, and selectSearch when each BarChart fires its select event", async () => {
+    const wrapper = mount(AnalyticsView, {
+      props: {
+        filters,
+        analytics: { viewsByStation: chartData.stations },
+        drilldownTitle: "Mobility",
+        drilldownRows: [{ label: "Coach", value: "Default Coach" }],
+        sectionError: null,
+        sectionSuccess: null,
+        chartData
+      }
+    });
+    const charts = wrapper.findAllComponents({ name: "BarChart" });
+    expect(charts).toHaveLength(3);
+
+    charts[0].vm.$emit("select", { index: 0, label: "Front-Desk-01", value: 12 });
+    charts[1].vm.$emit("select", { index: 1, label: "Mobility", value: 9 });
+    charts[2].vm.$emit("select", { index: 2, label: "flex", value: 3 });
+
+    expect(wrapper.emitted("selectStation")?.[0]).toEqual([0]);
+    expect(wrapper.emitted("selectPost")?.[0]).toEqual([1]);
+    expect(wrapper.emitted("selectSearch")?.[0]).toEqual([2]);
+  });
 });
 
 describe("DashboardBuilderView", () => {
@@ -465,6 +489,77 @@ describe("DashboardBuilderView", () => {
     await widgetTitleInput!.setValue("Members (renamed)");
     const emitted = wrapper.emitted("updateWidgetTitle");
     expect(emitted?.[emitted.length - 1]).toEqual(["w-1", "Members (renamed)"]);
+  });
+
+  it("emits update:templateName when the template-name input changes", async () => {
+    const wrapper = mount(DashboardBuilderView, {
+      props: {
+        widgetPalette: palette,
+        layout: [],
+        templateName: "Initial",
+        sectionError: null,
+        sectionSuccess: null
+      }
+    });
+    const templateInput = wrapper
+      .findAll("input")
+      .find((i) => i.attributes("placeholder") === "Template name");
+    await templateInput!.setValue("Updated Template");
+    const emitted = wrapper.emitted("update:templateName");
+    expect(emitted?.[emitted.length - 1]).toEqual(["Updated Template"]);
+  });
+
+  it("emits moveWidget when a widget is dragged to a new position", async () => {
+    const wrapper = mount(DashboardBuilderView, {
+      props: {
+        widgetPalette: palette,
+        layout: [
+          { id: "w-1", widgetType: "members", title: "Members", x: 0, y: 0, width: 2, height: 2 },
+          { id: "w-2", widgetType: "content", title: "Content", x: 2, y: 0, width: 2, height: 2 }
+        ],
+        templateName: "",
+        sectionError: null,
+        sectionSuccess: null
+      }
+    });
+
+    const draggables = wrapper.findAll('[draggable="true"]');
+    expect(draggables).toHaveLength(2);
+
+    const dataTransferStore = new Map<string, string>();
+    const dataTransfer = {
+      setData: (key: string, value: string) => dataTransferStore.set(key, value),
+      getData: (key: string) => dataTransferStore.get(key) ?? ""
+    };
+
+    await draggables[0].trigger("dragstart", { dataTransfer });
+    await draggables[1].trigger("drop", { dataTransfer });
+
+    expect(wrapper.emitted("moveWidget")?.[0]).toEqual([0, 1]);
+  });
+
+  it("renders palette and layout coords for inspection (covers conditional template branches)", () => {
+    const wrapper = mount(DashboardBuilderView, {
+      props: {
+        widgetPalette: palette,
+        layout: [
+          { id: "w-1", widgetType: "members", title: "Members", x: 0, y: 0, width: 2, height: 2 },
+          { id: "w-2", widgetType: undefined, title: undefined, x: 4, y: 6, width: 1, height: 1 }
+        ],
+        templateName: "",
+        savingLayout: true,
+        savingTemplate: true,
+        sectionError: "boom",
+        sectionSuccess: "ok"
+      }
+    });
+    expect(wrapper.text()).toContain("Saving layout...");
+    expect(wrapper.text()).toContain("Saving template...");
+    expect(wrapper.text()).toContain("boom");
+    expect(wrapper.text()).toContain("ok");
+    // Second widget falls back to widget.id when widgetType/title are absent.
+    expect(wrapper.text()).toContain("w-2");
+    expect(wrapper.text()).toContain("x=4, y=6");
   });
 });
 
@@ -607,5 +702,45 @@ describe("AdminConsoleView", () => {
       }
     });
     expect(wrapper.text()).toContain("Backup engine offline");
+  });
+
+  it("emits update:dryRunBackupId when the operator types a backup id", async () => {
+    const wrapper = mount(AdminConsoleView, {
+      props: {
+        consoleData,
+        backupResult: null,
+        recoveryResult: null,
+        dryRunBackupId: "",
+        loadingBackup: false,
+        loadingRecovery: false,
+        sectionError: null
+      }
+    });
+    const input = wrapper
+      .findAll("input")
+      .find((i) => i.attributes("placeholder") === "Backup run id");
+    await input!.setValue("17");
+    const emitted = wrapper.emitted("update:dryRunBackupId");
+    expect(emitted?.[emitted.length - 1]).toEqual(["17"]);
+  });
+
+  it("renders disabled-loading button labels for both backup and recovery actions", () => {
+    const wrapper = mount(AdminConsoleView, {
+      props: {
+        consoleData,
+        backupResult: null,
+        recoveryResult: null,
+        dryRunBackupId: "1",
+        loadingBackup: true,
+        loadingRecovery: true,
+        sectionError: null
+      }
+    });
+    expect(wrapper.text()).toContain("Running backup...");
+    expect(wrapper.text()).toContain("Validating restore...");
+    const backupButton = wrapper.findAll("button").find((b) => b.text().includes("Running backup"));
+    const dryRunButton = wrapper.findAll("button").find((b) => b.text().includes("Validating restore"));
+    expect(backupButton?.attributes("disabled")).toBeDefined();
+    expect(dryRunButton?.attributes("disabled")).toBeDefined();
   });
 });
