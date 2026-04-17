@@ -243,20 +243,25 @@ test.describe("no-mock HTTP coverage — signed admin route families", () => {
     sweep.suffix = Date.now().toString().slice(-7);
   });
 
-  test("self routes: GET /api/self/profile and POST /api/self/consent/face", async ({
+  test("self routes: GET /api/self/profile and POST /api/self/consent/face (member-scoped)", async ({
     request
   }) => {
-    const profile = await signedRequest(request, sweep.auth, "GET", "/api/self/profile");
+    // /api/self/* targets the caller's own member_profiles row.
+    // The admin demo user is NOT a member, so we log in as the seeded `member` user
+    // for this test and restore the admin sweep auth afterwards.
+    const memberAuth = await loginAs(request, "member", "Member12345!X", "Member-Self-Desk");
+
+    const profile = await signedRequest(request, memberAuth, "GET", "/api/self/profile");
     expect(profile.status()).toBe(200);
     const profileBody = await profile.json();
-    expect(profileBody.data.member.id).toBe(sweep.auth.currentUser.id);
+    expect(profileBody.data.member.id).toBe(memberAuth.currentUser.id);
     expect(typeof profileBody.data.member.username).toBe("string");
 
-    const consent = await signedRequest(request, sweep.auth, "POST", "/api/self/consent/face", {
+    const consent = await signedRequest(request, memberAuth, "POST", "/api/self/consent/face", {
       consentStatus: "granted"
     });
     expect(consent.status()).toBe(200);
-    expect(Number((await consent.json()).data.member.id)).toBe(sweep.auth.currentUser.id);
+    expect(Number((await consent.json()).data.member.id)).toBe(memberAuth.currentUser.id);
   });
 
   test("GET /api/members returns member and coach lists including the seeded coach", async ({

@@ -74,10 +74,13 @@ run_playwright() {
     bootstrap_env+=(-e PLAYWRIGHT_BOOTSTRAP_ONLY=true)
   fi
 
-  docker run --rm \
+  # MSYS_NO_PATHCONV / MSYS2_ARG_CONV_EXCL stop Git Bash on Windows from
+  # rewriting `/workspace` and `/ms-playwright` into Windows paths before they
+  # reach the Linux container. They are no-ops on Linux/macOS shells.
+  MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker run --rm \
     --network host \
     -v "$PWD:/workspace" \
-    -w /workspace \
+    -w "/workspace" \
     -v "${playwright_cache_volume}:/ms-playwright" \
     -v "${npm_cache_volume}:/root/.npm" \
     -e CI=1 \
