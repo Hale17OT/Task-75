@@ -271,8 +271,12 @@ const fail = (reason) => {
   }
 
   const cookieHeader = `sf_session=${sessionCookie}; sf_workstation=${workstationCookie}`;
+  // /api/self/* is intentionally omitted — those routes target the caller's
+  // own member_profiles row and the demo admin user is not a member. The
+  // Playwright api.spec.ts covers /api/self/profile and /api/self/consent/face
+  // by logging in as the demo `member` seed, so admin-only probes here stay
+  // focused on routes admin can actually reach.
   const probes = [
-    { method: "GET", path: "/api/self/profile" },
     { method: "GET", path: "/api/members" },
     { method: "GET", path: "/api/content/posts" },
     { method: "GET", path: "/api/content/analytics?locationCode=HQ" },
